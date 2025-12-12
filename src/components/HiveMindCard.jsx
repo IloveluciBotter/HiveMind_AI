@@ -1,6 +1,6 @@
 import React from 'react'
 
-export default function HiveMindCard({ globalBrain, userState, onClearRollback }) {
+export default function HiveMindCard({ globalBrain, userState, onClearRollback, isFullApp = false }) {
   const xpProgress = (globalBrain.xp % 1000) / 10
   const stabilityPercent = Math.round(globalBrain.stability * 100)
   
@@ -25,15 +25,22 @@ export default function HiveMindCard({ globalBrain, userState, onClearRollback }
     )
   }
 
+  const containerClass = isFullApp ? "" : "py-16"
+  const wrapperClass = isFullApp ? "" : "max-w-6xl mx-auto px-4"
+
   return (
-    <section className="py-16">
-      <div className="max-w-6xl mx-auto px-4">
-        <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-4">
-          The Hive Mind
-        </h2>
-        <p className="text-gray-400 text-center mb-8 max-w-2xl mx-auto">
-          Everyone who trains the AI contributes to a shared intelligence. See the collective progress.
-        </p>
+    <section className={containerClass}>
+      <div className={wrapperClass}>
+        {!isFullApp && (
+          <>
+            <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-4">
+              The Hive Mind
+            </h2>
+            <p className="text-gray-400 text-center mb-8 max-w-2xl mx-auto">
+              Everyone who trains the AI contributes to a shared intelligence. See the collective progress.
+            </p>
+          </>
+        )}
 
         <div className="grid md:grid-cols-2 gap-6">
           <div className="glass-card p-6">
@@ -65,6 +72,11 @@ export default function HiveMindCard({ globalBrain, userState, onClearRollback }
               <span className={`font-semibold ${getStabilityColor()}`}>
                 {stabilityPercent}%
               </span>
+            </div>
+
+            <div className="flex items-center justify-between py-3 border-t border-dark-border">
+              <span className="text-gray-400">Total Rollbacks</span>
+              <span className="text-white font-semibold">{globalBrain.rollbacks}</span>
             </div>
 
             {globalBrain.lastRollback && (

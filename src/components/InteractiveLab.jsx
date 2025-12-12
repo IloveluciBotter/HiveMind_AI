@@ -6,15 +6,14 @@ export default function InteractiveLab({
   globalBrain, 
   userState, 
   onSessionComplete,
-  addStyleCredits 
+  addStyleCredits,
+  isFullApp = false
 }) {
   const [gameState, setGameState] = useState('idle')
   const [questions, setQuestions] = useState([])
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
   const [answers, setAnswers] = useState([])
   const [selectedAnswer, setSelectedAnswer] = useState(null)
-  const [demoIntelligence, setDemoIntelligence] = useState(1)
-  const [demoXp, setDemoXp] = useState(0)
   const [result, setResult] = useState(null)
 
   const startQuiz = useCallback(() => {
@@ -45,20 +44,6 @@ export default function InteractiveLab({
       const scorePercent = Math.round((correct / newAnswers.length) * 100)
       const categoriesUsed = getCategoriesFromQuestions(questions)
       
-      let newIntelligence = demoIntelligence
-      let newXp = demoXp
-      
-      if (scorePercent >= 80) {
-        newIntelligence = Math.min(10, demoIntelligence + 1)
-        newXp = demoXp + Math.floor((scorePercent - 70) * userState.intelligence)
-      } else if (scorePercent < 50 && demoIntelligence > 1) {
-        newIntelligence = demoIntelligence - 1
-        newXp = Math.max(0, demoXp - 50)
-      }
-      
-      setDemoIntelligence(newIntelligence)
-      setDemoXp(newXp)
-      
       const sessionResult = {
         correct,
         total: newAnswers.length,
@@ -80,7 +65,7 @@ export default function InteractiveLab({
         addStyleCredits(credits)
       }
     }
-  }, [selectedAnswer, questions, currentQuestionIndex, answers, demoIntelligence, demoXp, userState.intelligence, onSessionComplete, addStyleCredits])
+  }, [selectedAnswer, questions, currentQuestionIndex, answers, userState.intelligence, onSessionComplete, addStyleCredits])
 
   const resetQuiz = useCallback(() => {
     setGameState('idle')
@@ -93,15 +78,23 @@ export default function InteractiveLab({
 
   const currentQuestion = questions[currentQuestionIndex]
 
+  const containerClass = isFullApp 
+    ? "" 
+    : "py-16"
+
   return (
-    <section id="lab" className="py-16">
-      <div className="max-w-4xl mx-auto px-4">
-        <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-4">
-          Interactive Training Lab
-        </h2>
-        <p className="text-gray-400 text-center mb-8 max-w-2xl mx-auto">
-          This is a simplified version of the training loop from the full app. Answer a few questions and see how the demo AI's intelligence score changes.
-        </p>
+    <section id="lab" className={containerClass}>
+      <div className={isFullApp ? "" : "max-w-4xl mx-auto px-4"}>
+        {!isFullApp && (
+          <>
+            <h2 className="text-3xl md:text-4xl font-bold text-white text-center mb-4">
+              Interactive Training Lab
+            </h2>
+            <p className="text-gray-400 text-center mb-8 max-w-2xl mx-auto">
+              Answer questions to train the AI brain. Your accuracy affects the Hive Mind's intelligence level.
+            </p>
+          </>
+        )}
 
         <div className="glass-card p-6 md:p-8">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-6 pb-6 border-b border-dark-border">
@@ -110,31 +103,36 @@ export default function InteractiveLab({
                 <span className="text-3xl">🧠</span>
               </div>
               <div>
-                <p className="text-sm text-gray-400">Demo AI Intelligence</p>
-                <p className="text-2xl font-bold text-white">Level {demoIntelligence}</p>
+                <p className="text-sm text-gray-400">Your Intelligence Level</p>
+                <p className="text-2xl font-bold text-white">Level {userState.intelligence}</p>
               </div>
             </div>
             
-            <div className="w-full md:w-48">
-              <p className="text-xs text-gray-400 mb-1">XP Progress</p>
-              <div className="h-3 bg-dark-bg rounded-full overflow-hidden">
-                <div 
-                  className="h-full progress-bar transition-all duration-500"
-                  style={{ width: `${(demoXp % 100)}%` }}
-                />
+            <div className="flex items-center gap-6">
+              <div className="text-center">
+                <p className="text-xs text-gray-400">Hive Mind Level</p>
+                <p className="text-xl font-bold text-neon-cyan">{globalBrain.level}</p>
               </div>
-              <p className="text-xs text-gray-500 mt-1">{demoXp} XP</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-400">Stability</p>
+                <p className="text-xl font-bold text-neon-green">{globalBrain.stability}%</p>
+              </div>
             </div>
           </div>
 
           {gameState === 'idle' && (
             <div className="text-center py-8">
-              <p className="text-gray-300 mb-6">
-                Ready to train the AI? Answer questions to improve its intelligence.
-              </p>
+              <div className="mb-6">
+                <p className="text-gray-300 text-lg mb-2">
+                  Ready to train the AI?
+                </p>
+                <p className="text-gray-500 text-sm">
+                  Answer 10 questions. Score 80%+ to increase the Hive Mind's intelligence.
+                </p>
+              </div>
               <button
                 onClick={startQuiz}
-                className="px-8 py-3 bg-gradient-to-r from-neon-cyan to-neon-purple text-black font-semibold rounded-lg hover:opacity-90 transition-all hover:scale-105"
+                className="px-8 py-4 bg-gradient-to-r from-neon-cyan to-neon-purple text-black font-semibold rounded-lg hover:opacity-90 transition-all hover:scale-105 text-lg"
               >
                 Start Training Session
               </button>
@@ -147,19 +145,19 @@ export default function InteractiveLab({
                 <span className="text-sm text-gray-400">
                   Question {currentQuestionIndex + 1} of {questions.length}
                 </span>
-                <span className="px-2 py-1 text-xs bg-dark-bg rounded-full text-neon-purple capitalize">
+                <span className="px-3 py-1 text-xs bg-dark-bg rounded-full text-neon-purple capitalize font-medium">
                   {currentQuestion.category}
                 </span>
               </div>
               
-              <div className="mb-2 h-1 bg-dark-bg rounded-full overflow-hidden">
+              <div className="mb-2 h-2 bg-dark-bg rounded-full overflow-hidden">
                 <div 
-                  className="h-full bg-neon-cyan transition-all duration-300"
+                  className="h-full bg-gradient-to-r from-neon-cyan to-neon-purple transition-all duration-300"
                   style={{ width: `${((currentQuestionIndex + 1) / questions.length) * 100}%` }}
                 />
               </div>
 
-              <h3 className="text-xl text-white mb-6 mt-6">
+              <h3 className="text-xl text-white mb-6 mt-6 leading-relaxed">
                 {currentQuestion.question}
               </h3>
 
@@ -171,10 +169,10 @@ export default function InteractiveLab({
                     className={`w-full p-4 text-left rounded-lg border transition-all ${
                       selectedAnswer === index
                         ? 'border-neon-cyan bg-neon-cyan/10 text-white'
-                        : 'border-dark-border bg-dark-bg text-gray-300 hover:border-gray-600'
+                        : 'border-dark-border bg-dark-bg text-gray-300 hover:border-gray-600 hover:bg-dark-800'
                     }`}
                   >
-                    <span className="inline-block w-6 h-6 mr-3 text-center rounded-full bg-dark-card text-sm leading-6">
+                    <span className="inline-flex items-center justify-center w-7 h-7 mr-3 rounded-full bg-dark-card text-sm font-medium">
                       {String.fromCharCode(65 + index)}
                     </span>
                     {option}
@@ -185,7 +183,7 @@ export default function InteractiveLab({
               <button
                 onClick={submitAnswer}
                 disabled={selectedAnswer === null}
-                className={`w-full py-3 rounded-lg font-semibold transition-all ${
+                className={`w-full py-4 rounded-lg font-semibold transition-all text-lg ${
                   selectedAnswer === null
                     ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
                     : 'bg-gradient-to-r from-neon-cyan to-neon-purple text-black hover:opacity-90'
@@ -205,7 +203,7 @@ export default function InteractiveLab({
                 <h3 className="text-2xl font-bold text-white mb-2">
                   You scored {result.correct}/{result.total}
                 </h3>
-                <p className="text-4xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple">
+                <p className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple">
                   {result.scorePercent}%
                 </p>
               </div>
@@ -218,36 +216,44 @@ export default function InteractiveLab({
                     : 'bg-red-500/10 border border-red-500/30'
               }`}>
                 {result.scorePercent >= 80 ? (
-                  <p className="text-neon-green">
-                    Excellent! Your clean data has been accepted. The AI's intelligence increased!
+                  <p className="text-neon-green text-lg">
+                    Excellent! Your high-quality data has been accepted. The Hive Mind's intelligence increased!
                   </p>
                 ) : result.scorePercent >= 50 ? (
-                  <p className="text-yellow-500">
-                    The AI observed your answers but didn't learn from them. Try again for cleaner data!
+                  <p className="text-yellow-500 text-lg">
+                    The AI observed your answers but didn't learn from them. Try again with more focus!
                   </p>
                 ) : (
-                  <p className="text-red-400">
+                  <p className="text-red-400 text-lg">
                     Warning: Low score detected. The AI rejected this noisy data to protect its knowledge.
                   </p>
                 )}
               </div>
 
-              <div className="flex flex-wrap justify-center gap-4 mb-6">
-                <div className="glass-card px-4 py-2">
-                  <p className="text-xs text-gray-400">Categories</p>
-                  <p className="text-sm text-white capitalize">{result.categoriesUsed.join(', ')}</p>
+              {result.scorePercent >= 80 && (
+                <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 mb-6">
+                  <p className="text-purple-400">
+                    +{getStyleCreditsForScore(result.scorePercent, userState.intelligence)} Style Credits earned!
+                  </p>
                 </div>
-                <div className="glass-card px-4 py-2">
-                  <p className="text-xs text-gray-400">Demo AI Level</p>
-                  <p className="text-sm text-neon-cyan">{demoIntelligence}</p>
+              )}
+
+              <div className="flex flex-wrap justify-center gap-4 mb-6">
+                <div className="glass-card px-4 py-3">
+                  <p className="text-xs text-gray-400">Categories Trained</p>
+                  <p className="text-sm text-white capitalize font-medium">{result.categoriesUsed.join(', ')}</p>
+                </div>
+                <div className="glass-card px-4 py-3">
+                  <p className="text-xs text-gray-400">Current Level</p>
+                  <p className="text-sm text-neon-cyan font-medium">{userState.intelligence}</p>
                 </div>
               </div>
 
               <button
                 onClick={resetQuiz}
-                className="px-8 py-3 bg-gradient-to-r from-neon-cyan to-neon-purple text-black font-semibold rounded-lg hover:opacity-90 transition-all"
+                className="px-8 py-4 bg-gradient-to-r from-neon-cyan to-neon-purple text-black font-semibold rounded-lg hover:opacity-90 transition-all text-lg"
               >
-                Try Again
+                Train Again
               </button>
             </div>
           )}
