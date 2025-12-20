@@ -1,0 +1,153 @@
+You are an expert front-end developer. I already have a working “Train Your AI” game with:
+
+- Home screen showing AI stats and Start Training button
+- Training screen that runs a 10-question multiple choice session
+- Result screen that applies the 70% / 50% rules to adjust intelligence level and score
+- State persisted in localStorage
+- Solana wallet integration and token-gated Start button
+- A redesigned dark-theme UI card layout
+- (Possibly) some previous limited level logic (e.g. Level 1–3)
+
+DO NOT remove or break existing wallet integration, persistence, or scoring rules. Instead:
+
+1. Replace any fixed-level system with an UNLIMITED level ladder that keeps getting harder.
+2. Add a chat box on the home screen to talk to the AI, where the reply style depends on intelligenceLevel.
+
+Implement everything fully. No placeholders, no TODOs.
+
+====================================================
+PART 1 – UNLIMITED LEVELS WITH SCALING DIFFICULTY
+====================================================
+
+Replace any previous Level 1/2/3 setup with the following:
+
+State:
+
+- Add or keep:
+  - currentLevel (number)
+  - maxUnlockedLevel (number)
+
+Initialization:
+
+- On a brand new save:
+  - currentLevel = 1
+  - maxUnlockedLevel = 1
+
+Question Bank:
+
+- Define a single QUESTION_BANK array with AT LEAST 30 meaningful questions (more is even better).
+- Each question object must include:
+  - id (number)
+  - text (string, real question text)
+  - options (array of at least 3 real options)
+  - correctIndex (index into options)
+  - complexity (integer 1–5)
+
+Use REAL questions and answers, not placeholders like “Question 1” or “Option A/B/C”. Make complexity mean:
+
+- complexity 1–2: easier questions (basic math, simple general knowledge, obvious definitions)
+- complexity 3–4: more involved reasoning, trickier wording, or multi-step logic
+- complexity 5: hardest questions, conceptually dense or with subtle traps
+
+Session Question Selection:
+
+- Every session is still exactly 10 questions.
+- When a session starts, choose 10 questions from QUESTION_BANK based on currentLevel:
+
+  1. Compute a target difficulty band from currentLevel. For example:
+     - Levels 1–3: mostly complexity 1
+     - Levels 4–6: complexity 1–2 (bias toward 2)
+     - Levels 7–9: complexity 2–3
+     - Levels 10–12: complexity 3–4
+     - Levels 13 and above: complexity 4–5
+
+  2. Implement this logic in code:
+     - For low levels, pick more questions with lower complexity.
+     - As currentLevel increases, prefer questions with higher complexity values.
+     - If needed, you can still include a few lower complexity questions for variety.
+  3. Randomize (shuffle) the questions used in each session so runs are not identical.
+
+Unlimited Levels & Unlocking:
+
+- There is no fixed upper bound on currentLevel or maxUnlockedLevel.
+- At the end of each session:
+  - If the player’s scorePercent meets the PASS threshold for that currentLevel:
+    - If currentLevel === maxUnlockedLevel:
+      - Increase maxUnlockedLevel by 1
+    - Leave currentLevel unchanged unless the user manually changes it on the home screen.
+
+Pass thresholds by level band:
+
+- Levels 1–10:
+  - Pass and “unlock next level” when scorePercent >= 70.
+- Levels 11–20:
+  - Pass and unlock next level only when scorePercent >= 80.
+- Levels 21+:
+  - Pass and unlock next level only when scorePercent >= 90.
+
+Fail logic (below 70) still follows the existing rules:
+
+- 50–69%: AI learns nothing (no intelligence change).
+- <50%: AI loses intelligence (level down / score penalty already defined).
+
+Home Screen Level Selector UI:
+
+- On the Home screen, add a level selector instead of a limited Level 1/2/3 UI:
+
+  - Show something like: “[ ◀ ] Level X [ ▶ ]”
+  - Left arrow decreases currentLevel by 1, but never below 1.
+  - Right arrow increases currentLevel by 1, but never above maxUnlockedLevel.
+  - Display a small difficulty label under the selector based on currentLevel, e.g.:
+    - “Difficulty: Easy” for levels 1–3
+    - “Difficulty: Normal” for levels 4–9
+    - “Difficulty: Advanced” for levels 10–15
+    - “Difficulty: Expert” for levels 16+ (you can tune the ranges).
+
+- Show the currentLevel clearly on both the Home screen and the Training/Result screens, for example:
+  - “Training Session – Level 7”
+  - “Level: 7 (Advanced)” on the result screen.
+
+Persistence:
+
+- Save currentLevel and maxUnlockedLevel in the same localStorage state as the other game stats.
+- On load, restore them and clamp currentLevel to maxUnlockedLevel if needed (in case of state mismatch).
+
+====================================================
+PART 2 – AI CHAT BOX (INTELLIGENCE-BASED REPLIES)
+====================================================
+
+Add a chat panel on the Home screen to talk to the AI and “feel” its intelligence.
+
+UI:
+
+- Inside the main Home screen card, add a section titled “Chat with Your AI”.
+- Components:
+  - A scrollable chat area:
+    - AI messages aligned to the left.
+    - User messages aligned to the right.
+  - Above the chat area, show a small label such as:
+    - “Current Intelligence: L<intelligenceLevel> • Level <currentLevel>”
+  - Below the chat area:
+    - A text input (single line) for user messages.
+    - A “Send” button.
+
+- Style:
+  - Give the chat area a subtle border and slightly different background to separate it from the stats.
+  - Ensure it scrolls when many messages are present and always scrolls to the bottom on new messages.
+
+Behavior:
+
+- Maintain an in-memory array of chat messages. No need to persist chat history in localStorage.
+- On load, seed the chat with one AI message, for example:
+  - A real greeting line like: “Hello, I’m your AI. Train me with high-quality answers and I’ll grow smarter over time.”
+
+On sending a message:
+
+1. When the user types a message and clicks “Send” (or presses Enter):
+   - If empty, ignore.
+   - Add the user message to the chat as a user bubble.
+   - Clear the input field.
+2. Generate an AI reply using a function like:
+
+   ```js
+   function generateAiReply(userMessage, state) { ... }

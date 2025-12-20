@@ -1,0 +1,76 @@
+A1 — Add the chat API route
+
+Add: POST /api/ai/chat
+Why: This creates a single “official HiveMind AI” entrypoint the whole app uses.
+
+Request fields:
+
+message (string)
+
+track (optional: General/Science/Math/Programming)
+
+aiLevel (number from the user’s current training level)
+
+Rules:
+
+Require JWT auth + 50+ HIVE gate
+
+Validate message length and aiLevel range
+
+A2 — Add corpus retrieval for grounding
+
+Add: a server function that pulls the most relevant training_corpus_items for the user’s message:
+
+filter by track if provided
+
+keyword search (simple search is fine for v1)
+
+return top N snippets
+
+Why: This makes the AI’s answers come from the official curated dataset, not random freeform output.
+
+A3 — Make responses “intelligence-based”
+
+Add: an “intelligence style” mapper based on aiLevel, e.g.:
+
+low levels: short, simple, minimal jargon
+
+mid levels: normal explanations + examples
+
+high levels: technical detail, tighter reasoning, structured steps
+
+Why: This preserves your existing “AI gets smarter as you train it” feel inside chat.
+
+A4 — Generate the assistant reply using the official corpus context
+
+Add: a response generator that:
+
+builds a single response using the retrieved corpus snippets as its “knowledge”
+
+if corpus retrieval returns nothing relevant, respond clearly that it’s not in the official corpus yet and suggest what kind of corpus entry would help
+
+Why: This reinforces the core promise: the one AI only “knows” what the official dataset contains (plus general reasoning), so holders can see the brain growing.
+
+A5 — Add chat history storage (minimal)
+
+Add: store chat messages in DB (user_id, track, aiLevel, user_message, ai_response, created_at) and expose:
+
+GET /api/ai/chat/history (last 50)
+
+Why: Users want continuity, and it helps you debug whether the AI is actually grounding to corpus.
+
+A6 — Add the frontend “Official AI Chat” page
+
+Add UI page:
+
+chat box + send
+
+track dropdown (optional)
+
+show “AI Intelligence Level: X”
+
+show “Using official corpus” indicator
+
+load history on open
+
+Why: This is the visible proof that HiveMind is becoming a single official AI, not just a quiz.

@@ -1,0 +1,106 @@
+You are an expert front-end UI developer and designer.
+
+I already have a working “Train Your AI” quiz game with:
+- Home screen
+- Training screen
+- Result screen
+- LocalStorage state (intelligence level, score, etc.)
+- Solana wallet integration + token-gated Start button
+
+DO NOT remove or break any existing game logic, state management, or wallet code. Only improve the UI/UX and layout.
+
+Apply the following UI design:
+
+1) Global Layout
+- Dark theme with a radial or linear gradient background (e.g. deep blue to dark purple).
+- Centered main container with a max width around 480–600px.
+- Use a card-style layout:
+  - background: rgba(13, 17, 23, 0.96)
+  - border-radius: 16px
+  - subtle border and drop shadow
+- Add a simple top bar:
+  - Left: app title “Train Your AI” + small subtitle text.
+  - Right: wallet status area:
+    - If NOT connected: a “Connect Wallet” button.
+    - If connected: a pill showing a green dot + shortened address + disconnect icon/button.
+  - Under wallet status, show a single line about token gating:
+    - “✅ You have enough $MEME to train” when requirements are met.
+    - “⚠️ Need at least 50 $MEME to train” when not.
+
+2) Home Screen
+- Inside the main card, create a “Your AI Core” section.
+- Left side: AI avatar area:
+  - A large emoji inside a glowing circular background.
+  - Use the existing intelligenceLevel to pick the emoji:
+    - Level 1–3 → 🤖💤 with caption “Very basic model”
+    - Level 4–7 → 🤖📚 with caption “Learning well”
+    - Level 8+ → 🤖🚀 with caption “Highly trained”
+- Right side: a 2×2 stats grid showing:
+  - Intelligence Level: L<number>
+  - Intelligence Score
+  - Total Sessions
+  - Best Score (%)
+- Below that, add a horizontal “Intelligence Progress” bar that visually represents progress toward the next level (you can derive a percentage from the existing intelligenceScore or just map it to a simple 0–100% scale for now).
+- Under the bar, add a compact rules box with the text:
+  - “Training Rules:
+     • Score ≥ 70% → AI learns and gets smarter
+     • 50–69% → AI learns nothing this session
+     • < 50% → AI can lose intelligence”
+- Show current soft currency balance (e.g. Data Shards if already implemented) as “Data Shards: <value>”.
+- At the bottom of the card, add a large primary button:
+  - If wallet + token + currency requirements are met: “Start Training Session”.
+  - If not, disable it and show a small explanatory message below the button (e.g. “You need 50 Data Shards and 50+ $MEME to train.”).
+
+3) Training Screen
+- Title at the top of the card: “Training Session – Level 1”.
+- Top row:
+  - Left: “Question X of 10”.
+  - Right: “Correct so far: N”.
+- Show the current question text prominent and readable.
+- Render the multiple-choice options as full-width buttons with:
+  - Hover state (slight color change and pointer cursor).
+  - Selected state (highlighted / outlined).
+- When the user clicks an option:
+  - Disable all option buttons.
+  - Visually mark the selected one.
+  - Wait ~700ms before automatically advancing to the next question.
+- Near the bottom of the card, show a small reminder:
+  - “Remember: score below 50% can make your AI lose intelligence.”
+
+4) Result Screen
+- Title: “Session Complete”.
+- Show:
+  - “You scored X / 10 (Y%)”.
+- Add a badge-style outcome label based on the score bands:
+  - If score >= 70%:
+    - Text: “High-quality training”.
+    - Style: green pill.
+  - If 50–69%:
+    - Text: “Low signal – discarded”.
+    - Style: neutral/gray pill.
+  - If < 50%:
+    - Text: “Noisy data – harmful training”.
+    - Style: red pill.
+- Show a “Before → After” stats table or side-by-side block with:
+  - Intelligence Level: e.g. “L2 → L3”.
+  - Intelligence Score: e.g. “120 → 160”.
+  - Data Shards balance if applicable: e.g. “430 → 460”.
+- Below that, show a short explanation paragraph based on outcome:
+  - Success (>=70%):
+    “Your AI integrated this session into its core model.”
+  - Neutral (50–69%):
+    “Answers were too inconsistent. Your AI discarded this data.”
+  - Fail (<50%):
+    “Too many wrong answers in one batch. Your AI rolled back some intelligence to avoid corrupting its model.”
+- Add two buttons at the bottom:
+  - Primary: “Train Again” – starts a new session.
+  - Secondary (outline): “Back to Home” – goes back to the home screen.
+- Slightly tint the background of the result card differently for success (greenish), neutral (default), and fail (reddish) by adding CSS classes like `result--success`, `result--neutral`, and `result--fail`.
+
+5) Styling Details
+- Use consistent spacing (padding/margins) and typography across all screens.
+- Define CSS variables for the color palette (background, card, accent, text, muted text).
+- Implement button hover and active states.
+- Make sure the layout works well on mobile (stack avatar and stats vertically and let content wrap).
+
+Do NOT use placeholder text or TODO markers. All UI must be fully implemented and connected to the existing state and logic so the app remains fully playable.

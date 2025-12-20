@@ -1,0 +1,263 @@
+You are an expert front-end engineer and product-minded UX designer.
+
+I already have a working “Train Your AI” game with:
+
+- Home screen:
+  - AI avatar (with skins & auras)
+  - Intelligence stats (level, score, sessions, best score)
+  - Level selector with unlimited levels and difficulty scaling
+  - Style Credits balance
+  - Start Training button (token-gated + any soft-currency rules already implemented)
+  - AI chat box whose replies depend on intelligenceLevel
+  - Button to open a Cosmetics shop
+- Training screen:
+  - 10-question multiple-choice sessions
+  - Question counter and correct count
+  - Difficulty scaling automatically with currentLevel using QUESTION_BANK (50 questions with complexity 1–5)
+- Result screen:
+  - Score summary and percentage
+  - Outcome band:
+    - >=70%: AI learns (intelligence up)
+    - 50–69%: no learning
+    - <50%: AI loses intelligence
+  - Before/After stats (level, score, Style Credits, etc.)
+  - Style Credits earnings per session
+- Unlimited level system:
+  - currentLevel, maxUnlockedLevel
+  - Pass thresholds that increase with level bands (70/80/90%)
+- Wallet integration:
+  - Connect Phantom
+  - Token-gated Start button (requires at least 50 of my SPL token)
+- Cosmetics system:
+  - Style Credits currency
+  - Cosmetics shop with:
+    - 3 avatar skins (Default Core, Glitched Core, Overclocked Core)
+    - 3 auras (Neon Blue, Neon Purple, Neon Green)
+  - Buy with Style Credits, equip, persist in localStorage
+  - Avatar visuals update immediately when equipping cosmetics
+- General:
+  - Dark, glassmorphic UI theme
+  - Game state persisted in localStorage
+
+DO NOT break or remove any existing core logic:
+
+- Unlimited levels / difficulty scaling
+- Question selection
+- Intelligence gain/loss rules
+- Style Credits earning and cosmetics
+- Wallet connection and token gating
+- AI chat behavior
+- Existing UI layout and general visual theme
+
+Your task: make this app “ready to publish” by improving robustness, onboarding, UX polish, and adding basic product touches.
+
+Implement ALL of the following. No TODOs, no placeholder text.
+
+====================================================
+PART 1 – ONBOARDING & “HOW IT WORKS”
+====================================================
+
+Add a simple, clear onboarding experience and “How it Works” area so a brand-new user understands the app quickly.
+
+1) First-time intro banner:
+
+- Detect first-time users via a flag in localStorage, e.g. `hasSeenIntro`.
+- If `hasSeenIntro` is false or missing:
+  - On the Home screen, show a dismissible intro panel at the top of the main card (or as a small centered modal over the card).
+  - Content should be concise and real text, for example:
+
+    Title: “Welcome to Train Your AI”
+    Bullet points:
+    - “Connect your wallet to access the game.”
+    - “Pick a level and answer 10 questions per run.”
+    - “High scores make your AI smarter. Low scores can make it lose intelligence.”
+    - “Earn Style Credits from good runs and buy cosmetics for your AI.”
+
+  - Include a button: “Got it, let’s train”.
+  - When clicked, hide the intro and set `hasSeenIntro = true` in localStorage.
+
+2) “How it Works” section:
+
+- On the Home screen, add a small section (could be a collapsible panel) labeled “How it Works”.
+- Content should briefly explain:
+
+  - Training:
+    - 10 questions per session.
+    - Unlimited levels; higher levels mean tougher questions and stricter pass thresholds.
+  - Intelligence:
+    - Score ≥ 70% → AI learns and may unlock higher levels.
+    - 50–69% → AI discards the session (no learning).
+    - <50% → AI loses intelligence.
+  - Style Credits:
+    - Earned from good runs.
+    - Used in the Cosmetics shop.
+  - Wallet & token:
+    - You must hold at least 50 of the game token to start training (if gating is active).
+
+Make this text visible and nicely styled, but not overwhelming.
+
+====================================================
+PART 2 – EMPTY STATES & FRIENDLY MESSAGING
+====================================================
+
+Ensure the app behaves nicely when the user has no history or data.
+
+1) Recent sessions (if you already have one, enhance it; if not, add it):
+
+- Add or update a small “Recent Sessions” panel on the Home screen.
+- If there are NO past sessions:
+  - Show a friendly line:
+    - “No sessions yet. Start your first training run to see your history here.”
+- If there ARE past sessions, show a small list (e.g. last 5) with:
+  - Session number, level played, score %, and outcome (“Learned”, “No learning”, “Lost intelligence”).
+
+2) Style Credits and Cosmetics empty hints:
+
+- If the player owns only the default skin and no paid cosmetics yet:
+  - In the Cosmetics shop, under the relevant sections, show a note like:
+    - “Try your first cosmetic purchase with Style Credits you earn from good runs.”
+- If Style Credits are low and they can’t afford anything:
+  - Show a short note:
+    - “Score 70%+ in training sessions to earn more Style Credits.”
+
+3) Chat empty state:
+
+- If the chat has only the initial AI message:
+  - Show subtle hint near the input:
+    - “Ask your AI how smart it is or what you should try next.”
+
+====================================================
+PART 3 – MOBILE RESPONSIVENESS & LAYOUT POLISH
+====================================================
+
+Improve responsive behavior so the app is comfortable on mobile.
+
+- Review and adjust CSS so that on narrow screens (e.g. max-width: 600px):
+
+  - The top header (title + wallet area) does NOT overflow; stack the subtitle or shorten text if needed.
+  - The main card uses full width with comfortable padding.
+  - Stats grid on Home stacks vertically or in a 2x2 grid that works on small screens.
+  - Level selector, Start button, and “Cosmetics” button are easily tappable.
+  - Chat area height is constrained and scrollable, with enough space left for the input and send button.
+
+- Use media queries to:
+  - Reduce font sizes slightly on small screens.
+  - Ensure buttons remain at least ~44px tall.
+
+Do not change the overall visual theme; just refine layout.
+
+====================================================
+PART 4 – LOCALSTORAGE ROBUSTNESS & RESET PROGRESS
+====================================================
+
+Make the app resilient to corrupted or missing saved data and allow users to reset.
+
+1) Robust state loading:
+
+- When loading state from localStorage:
+  - Use try/catch and validate that the parsed object has the expected properties and types.
+  - If data is missing or invalid, gracefully fall back to default state:
+    - intelligenceLevel, intelligenceScore, totalSessions, bestScorePercent, currentLevel, maxUnlockedLevel, Style Credits, owned cosmetics, etc.
+  - Do NOT let invalid localStorage data break the app or throw fatal errors.
+
+2) Reset Progress button:
+
+- Add a “Reset Progress” option in a small settings area on the Home screen (for example, a tiny “Settings” or “Options” button that opens a minimal panel).
+- Inside, include:
+  - A button: “Reset Game Progress”.
+  - When clicked:
+    - Show a confirmation prompt: “Are you sure? This will clear your AI progress, levels, Style Credits, and cosmetics.”
+    - On confirm:
+      - Clear the game state from localStorage (but DO NOT touch wallet or browser-wide data).
+      - Reinitialize state to defaults.
+      - Reload or re-render the app to show a fresh first-time experience.
+
+====================================================
+PART 5 – WALLET & TOKEN-GATING UX IMPROVEMENTS
+====================================================
+
+Improve the messaging around wallet and token requirements.
+
+1) No wallet installed:
+
+- If Phantom (or the expected wallet API) is not detected:
+  - Show a clear message near the Connect Wallet area:
+    - “Phantom wallet not detected. Install it to use token-gated training.”
+  - Provide a link to Phantom’s official site (open in new tab).
+
+2) Wallet connected but insufficient tokens:
+
+- When the user connects a wallet that doesn’t meet the 50-token requirement:
+  - Keep Start Training button disabled.
+  - Show a red or warning-colored note:
+    - “You need at least 50 of the game token in your wallet to start training.”
+  - Make sure this state updates correctly if the user reconnects a different wallet.
+
+3) Optional: placeholder mint warning (config):
+
+- If your MEME token mint is still a known placeholder string (you can compare against that placeholder constant):
+  - Do NOT block the game, but:
+    - Show a small yellow info badge in the wallet area:
+      - “Token checks are in demo mode. Real mint address not configured yet.”
+  - Wrap this in a simple condition so that when you later update the mint constant, this message disappears automatically.
+
+4) Never ask for/private keys:
+
+- Ensure there is no text anywhere suggesting seed phrases or private keys. All wallet interaction must be standard connect/disconnect via the wallet provider.
+
+====================================================
+PART 6 – DISCLAIMER & ABOUT / INFO SECTION
+====================================================
+
+Add basic, honest info and disclaimers so the app is safer to share publicly.
+
+1) Footer or info section:
+
+- At the bottom of the main page (or in a small “About” panel), add:
+
+  - A short “About this app” paragraph (real text), e.g.:
+
+    - “Train Your AI is a browser-based quiz game where you train a virtual AI model by answering questions. Your performance affects the AI’s intelligence and unlocks higher difficulties and cosmetics.”
+
+  - A clear disclaimer:
+
+    - “This is a game and educational experience. It does not provide financial advice or guarantees of any financial return.”
+    - “Token gating and any future rewards are experimental and for entertainment purposes only.”
+
+  - Basic privacy note:
+    - “Your game progress is stored locally in your browser using localStorage. We do not store your private keys or wallet seed phrases.”
+
+2) Link styling:
+
+- If you include any external links (like Phantom download or your own info), ensure they open in a new tab and are visually distinct.
+
+====================================================
+PART 7 – LIGHTWEIGHT EVENT LOGGING (OPTIONAL ANALYTICS HOOK)
+====================================================
+
+Add a lightweight internal event logging system (no external services) to prepare for future analytics.
+
+- Implement a simple `logEvent(name, payload)` function in your JS that:
+  - Logs events to `console.log` with a consistent format, for example:
+    - `logEvent("session_end", { level: currentLevel, scorePercent, outcome })`
+  - For now, it’s fine if this only logs to the console.
+
+- Use this function in a few key places:
+  - When a training session starts: `session_start`
+  - When a training session ends: `session_end`
+  - When a new level is unlocked: `level_unlocked`
+  - When a cosmetic is purchased: `cosmetic_purchased`
+  - When a cosmetic is equipped: `cosmetic_equipped`
+
+This should NOT break anything; it just gives structure to future analytics.
+
+====================================================
+GENERAL REQUIREMENTS
+====================================================
+
+- Keep all existing features and styling; enhance and extend, don’t replace.
+- Use clear, friendly, production-ready text in all new UI elements. No placeholder text like “Lorem ipsum” or “TODO”.
+- Ensure the app still works end-to-end after these changes:
+  - New user → sees intro → can connect wallet → can start training if gating conditions are met (or if gating is in “demo mode” as configured) → can complete a session → sees results, Style Credits, and cosmetics updates → can visit Cosmetics shop and buy/equip items → can chat with AI → can return later and see persisted progress.
+
+Implement everything directly in the existing files (HTML/CSS/JS or the current framework structure), updating components and styles as needed while preserving the overall dark / glassmorphic theme.

@@ -1,0 +1,259 @@
+You are an expert front-end web developer.
+
+Build a COMPLETE, FULLY WORKING single-page web app (NO placeholders, NO TODOs, NOTHING stubbed out) that implements this game:
+
+====================================================
+GAME CONCEPT – “Train Your AI”
+====================================================
+
+The app lets the user “train” a pet AI by answering multiple-choice questions in a training session.
+
+At the end of the session, their score determines:
+- Whether the AI gets smarter (intelligence goes up)
+- Stays the same (no learning)
+- Or gets dumber (intelligence goes down)
+
+All data is stored in localStorage so the user’s AI stats persist between page refreshes.
+
+This must be a complete, playable experience as-is. DO NOT write instructions like “add questions here later” or “replace with real data later”. Implement everything fully.
+
+====================================================
+TECH & PROJECT STRUCTURE
+====================================================
+
+Use ONLY vanilla HTML, CSS, and JavaScript (no frameworks).
+
+Create these three files:
+
+1. index.html
+2. style.css
+3. script.js
+
+Link style.css and script.js from index.html.
+
+The app is a single-page app. Use simple show/hide of different sections for screens (no routing).
+
+====================================================
+UI LAYOUT & SCREENS
+====================================================
+
+There are three main UI states:
+
+1. HOME SCREEN – AI Overview
+2. TRAINING SCREEN – Question Flow
+3. RESULT SCREEN – Summary After Session
+
+All screens should be inside a centered main container, with a modern, clean look (dark theme is preferred).
+
+-------------------------
+1) HOME SCREEN CONTENT
+-------------------------
+
+Visible by default when the app loads.
+
+Components:
+
+- App Title: “Train Your AI”
+- A subtitle line explaining the concept:
+  “Answer questions to train your AI. High scores make it smarter, bad scores can make it dumber.”
+- An AI Avatar area:
+  - Show a big emoji representing the AI’s current mood, based on intelligence level:
+    - Level 1–3: 🤖💤 with caption “Very basic model”
+    - Level 4–7: 🤖📚 with caption “Learning well”
+    - Level 8+: 🤖🚀 with caption “Highly trained”
+- Display current stats:
+  - Intelligence Level: show as integer (starts at 1)
+  - Intelligence Score: number (starts at 0)
+  - Total Sessions Completed
+  - Best Session Score (%)
+- A “Start Training Session” button that transitions to the training screen.
+
+Below the button, show a small text block that clearly explains the scoring rules:
+
+- “Score 70% or higher: your AI learns and gets smarter.”
+- “Score between 50% and 69%: your AI learns nothing this session.”
+- “Score below 50%: your AI can lose intelligence.”
+
+------------------------------
+2) TRAINING SCREEN CONTENT
+------------------------------
+
+When “Start Training Session” is clicked on the home screen:
+
+- Hide the home screen section.
+- Show the training screen section.
+
+Training screen must include:
+
+- A heading: “Training Session – Level 1”
+- A progress indicator: “Question X of 10”
+- A main card area showing:
+  - Question text
+  - Multiple choice options (buttons)
+- A visible score tracker while answering:
+  - For example: “Correct so far: N”
+
+Question behavior:
+
+- Show ONE question at a time.
+- The user clicks one of the options to answer.
+- After clicking:
+  - Lock the answer to prevent changing it.
+  - Move automatically to the next question.
+- Do NOT show “correct or incorrect” feedback per question in this MVP; feedback comes at the end.
+
+When the user has answered all 10 questions:
+
+- Automatically transition to the RESULT SCREEN.
+
+------------------------------
+3) RESULT SCREEN CONTENT
+------------------------------
+
+After all questions in a training session are answered, show:
+
+- “Session Complete”
+- Show:
+  - Questions Correct: e.g. “7 / 10”
+  - Score Percentage: e.g. “70%”
+- Show the effect on the AI based on score bands:
+
+Game rules:
+
+- If scorePercent >= 70:
+  - The AI LEARNS.
+  - intelligenceLevel increases by 1 (max never enforced for MVP).
+  - intelligenceScore increases by (correctAnswers * 10).
+  - Show a success message:
+    “Good training! Your AI has learned and grown smarter.”
+- If 50 <= scorePercent < 70:
+  - The AI learns NOTHING.
+  - intelligenceLevel and intelligenceScore do NOT change.
+  - Show a neutral message:
+    “Not enough signal. Your AI didn’t learn from this session.”
+- If scorePercent < 50:
+  - The AI LOSES intelligence.
+  - intelligenceLevel decreases by 1, but never below 1.
+  - intelligenceScore decreases by 20, but never below 0.
+  - Show a warning message:
+    “Too much noise. Your AI lost intelligence this session.”
+
+Also show “Before → After” stats:
+
+- Intelligence Level: e.g. “L2 → L3” or “L3 → L2”
+- Intelligence Score: e.g. “120 → 160”
+- Total Sessions: increment by 1
+- Update Best Score if this session’s % is higher than previous best.
+
+Buttons on result screen:
+
+- “Back to Home” – takes user back to Home screen and shows updated AI avatar and stats.
+- “Train Again” – immediately starts another training session (new run with questions reshuffled).
+
+====================================================
+QUESTION DATA – REAL, NON-PLACEHOLDER
+====================================================
+
+You MUST implement a real, fully-populated question set.
+
+Requirements:
+
+- Use a JavaScript array of EXACTLY 10 question objects for this MVP.
+- Each question must be concrete, meaningful, and non-placeholder.
+- Topics can be general knowledge, logic, basic math, and simple concepts.
+- Each question object should look like:
+
+  {
+    id: 1,
+    text: "What does 'CPU' stand for in computing?",
+    options: ["Central Processing Unit", "Computer Personal Unit", "Core Processor Utility"],
+    correctIndex: 0
+  }
+
+- Ensure:
+  - Each question has at least 3 options.
+  - Exactly one option is correct.
+  - correctIndex points to the correct option.
+
+- DO NOT write placeholder-like text such as:
+  - “Question goes here”
+  - “Option 1 / Option 2 / Option 3”
+  - or anything that looks like a template.
+
+The questions must be usable and sensible as-is.
+
+Behavior:
+
+- At the start of each training session, create a working copy of the questions array and randomize their order so that each session can have a different question order.
+- For MVP, use all 10 questions in each session (no need to sample/subset).
+
+====================================================
+STATE MANAGEMENT & PERSISTENCE
+====================================================
+
+Use a single state object in JavaScript to track at least:
+
+- intelligenceLevel (number)
+- intelligenceScore (number)
+- totalSessions (number)
+- bestScorePercent (number)
+
+Initialize default values when no save exists:
+
+- intelligenceLevel: 1
+- intelligenceScore: 0
+- totalSessions: 0
+- bestScorePercent: 0
+
+On app load:
+
+- Try to read from localStorage with a key like "trainYourAIState".
+- If no data exists, create the default state.
+- Always render the home screen with up-to-date state stats.
+
+On session end (result screen):
+
+- Update this state according to the rules (learning/no learning/losing intelligence).
+- Save the state back to localStorage.
+
+Implement helper functions such as:
+
+- loadStateFromStorage()
+- saveStateToStorage()
+- startTrainingSession()
+- showHomeScreen()
+- showTrainingScreen()
+- showResultScreen()
+
+But make sure ALL of them are fully implemented and working. NO stubs, NO partials.
+
+====================================================
+VISUAL DESIGN & UX REQUIREMENTS
+====================================================
+
+- Use CSS to create a clean, centered card-style layout with:
+  - A max-width around 480–600px.
+  - A subtle drop shadow.
+  - Rounded corners.
+- Use a dark background for the page (e.g. dark grey / navy).
+- Use a contrasting card background for the main container (e.g. slightly lighter dark).
+- Buttons should look clickable with hover states (e.g. slight color change, pointer cursor).
+- Make the app reasonably responsive for mobile screens:
+  - Use responsive font sizes.
+  - Let content reflow vertically on narrow screens.
+
+====================================================
+CONSTRAINTS / IMPORTANT NOTES
+====================================================
+
+- DO NOT generate any placeholder text, placeholder questions, or TODO comments.
+- DO NOT leave any function unimplemented.
+- When you produce the code, it must be copy-paste runnable in a Replit HTML/CSS/JS project and immediately work as a playable game.
+- Everything described above must be implemented as real, working behavior.
+
+Now, write the complete content of:
+1) index.html
+2) style.css
+3) script.js
+
+with all logic, markup, and styling needed for a fully working MVP.

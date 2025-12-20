@@ -1,0 +1,247 @@
+You are an expert front-end developer working on my existing “Train Your AI” game.
+
+The game already has:
+
+- Home screen with AI avatar, stats, level selector, Start Training button, and AI chat
+- Training screen with 10-question sessions and difficulty scaling by level
+- Result screen that applies:
+  - ≥70%: AI learns (intelligence up)
+  - 50–69%: no learning
+  - <50%: intelligence loss
+- Unlimited level system with a QUESTION_BANK of 50 questions and complexity 1–5
+- State persisted in localStorage (intelligence level, score, sessions, etc.)
+- Solana wallet integration and token-gating (50 $MEME required)
+- Dark theme, glassmorphic UI, and working AI chat
+
+DO NOT break or remove any existing functionality. Only extend the app with:
+
+1) A cosmetic-only currency called `Style Credits`
+2) A Cosmetics Shop UI
+3) The ability to buy and equip cosmetics
+4) 3 avatar skins and 3 aura styles that actually change the visuals
+
+Everything must be fully implemented. No placeholders or TODOs.
+
+====================================================
+PART 1 – STYLE CREDITS (COSMETIC CURRENCY)
+====================================================
+
+Add a new cosmetic-only currency:
+
+- Name: Style Credits
+- Internal state property: `styleCredits` (number)
+
+Behavior:
+
+- Initialize `styleCredits` for brand-new players:
+  - Default starting balance: 200 (so the player can buy at least one cosmetic immediately)
+- Save `styleCredits` to localStorage as part of the same state object you already use for intelligence, sessions, etc.
+- Load `styleCredits` from localStorage on startup.
+- Show the Style Credits balance on the Home screen:
+  - Under or near the existing stats, display: `Style Credits: <value>`
+
+Earning Style Credits:
+
+For now, implement a simple earning rule tied to ranked sessions:
+
+- After a training session (on the result screen), award Style Credits based on performance:
+  - If scorePercent >= 90:
+    - +20 Style Credits
+  - Else if scorePercent >= 70:
+    - +10 Style Credits
+  - Else:
+    - +0 Style Credits
+
+On the result screen, in the session summary, also show:
+
+- “Style Credits earned this run: +X” (X may be 0, 10, or 20)
+- “New Style Credits balance: <updated value>”
+
+====================================================
+PART 2 – COSMETIC TYPES (3 SKINS + 3 AURAS)
+====================================================
+
+Implement two cosmetic types:
+
+- Avatar Skins (3 total)
+- Auras (3 total)
+
+All of these MUST be real, visually different options, not placeholders.
+
+Use the existing AI avatar area on the Home screen and extend it so that it:
+
+- Uses the currently equipped avatar skin to determine:
+  - Which emoji/icon is shown
+  - Any extra class applied for styling
+- Uses the currently equipped aura to determine:
+  - The glow color / effect around the avatar container (CSS class-based)
+
+Define these 3 avatar skins:
+
+1) Default Core
+   - ID: "skin_default"
+   - Name: "Default Core"
+   - Description: “Standard training shell.”
+   - Visual: keep the current behavior that changes emoji by intelligenceLevel (the existing 🤖💤 / 🤖📚 / 🤖🚀 logic).
+   - Price: 0 Style Credits (always owned and always available).
+
+2) Glitched Core
+   - ID: "skin_glitched"
+   - Name: "Glitched Core"
+   - Description: “A core flickering with unstable data.”
+   - Visual: use a glitchy-looking emoji or combination, e.g. 🧠💥 or 🤖 with a glitch-style CSS effect (e.g. slight animation, chromatic aberration-style borders).
+   - Price: 100 Style Credits.
+
+3) Overclocked Core
+   - ID: "skin_overclocked"
+   - Name: "Overclocked Core"
+   - Description: “Running dangerously close to thermal limits.”
+   - Visual: use a fiery or intense emoji combination, e.g. 🤖🔥 or 🔥🤖, and give the avatar a more intense CSS effect (stronger glow).
+   - Price: 200 Style Credits.
+
+Define these 3 aura styles:
+
+1) Neon Blue Aura
+   - ID: "aura_blue"
+   - Name: "Neon Blue Aura"
+   - Description: “Cool, stable neural glow.”
+   - Visual: blue outer glow around avatar container.
+   - Price: 50 Style Credits.
+
+2) Neon Purple Aura
+   - ID: "aura_purple"
+   - Name: "Neon Purple Aura"
+   - Description: “Mysterious experimental field.”
+   - Visual: purple outer glow around avatar container.
+   - Price: 75 Style Credits.
+
+3) Neon Green Aura
+   - ID: "aura_green"
+   - Name: "Neon Green Aura"
+   - Description: “Overloaded optimization circuits.”
+   - Visual: green outer glow around avatar container.
+   - Price: 100 Style Credits.
+
+Technical implementation notes:
+
+- Add state fields:
+  - `ownedSkins`: array of skin IDs
+  - `ownedAuras`: array of aura IDs
+  - `equippedSkin`: one skin ID
+  - `equippedAura`: one aura ID
+
+- Default ownership:
+  - `ownedSkins` should initially include `"skin_default"`
+  - `ownedAuras` can start empty (no aura equipped) or you can give Neon Blue Aura for free if you want, but implement prices as described.
+- Default equipped:
+  - `equippedSkin = "skin_default"` by default.
+  - `equippedAura = null` or `"aura_blue"` if you decide to make it free.
+
+Persist `ownedSkins`, `ownedAuras`, `equippedSkin`, and `equippedAura` to localStorage.
+
+====================================================
+PART 3 – COSMETICS SHOP UI
+====================================================
+
+Add a new “Cosmetics” section accessible from the Home screen.
+
+UI placement:
+
+- On the Home screen card, near the bottom or in a small header area, add a button or tab:
+  - Label: “Cosmetics”
+- Clicking “Cosmetics” should switch the main card content to a Cosmetics Shop view.
+- Provide a way to go back to the main Home / Stats view (e.g. a “Back” button or toggle tabs like “Overview | Cosmetics”).
+
+Cosmetics Shop layout:
+
+- At the top of the shop view, show:
+  - Title: “Cosmetics Shop”
+  - Current Style Credits balance: “Style Credits: <value>”
+
+- Below, show two sections:
+  1) Avatar Skins
+  2) Auras
+
+For each section:
+
+- Render cards for each cosmetic with:
+  - Name
+  - Short description
+  - Preview:
+    - For skins: show the emoji / representation.
+    - For auras: show a small circle or avatar preview with the aura color.
+  - Price in Style Credits.
+  - Ownership / equip state:
+
+Button behaviors per item:
+
+- If not owned:
+  - Show button: “Buy – X Style Credits”
+  - Enabled only if styleCredits >= price.
+  - On click:
+    - Deduct the price from styleCredits.
+    - Add the ID to `ownedSkins` or `ownedAuras`.
+    - Update localStorage.
+    - Refresh UI so it now shows as owned.
+
+- If owned but not equipped:
+  - Show button: “Equip”
+  - On click:
+    - Set `equippedSkin` or `equippedAura` to that item’s ID.
+    - Save to localStorage.
+    - Immediately update the avatar display on the Home screen to reflect the equipped choice.
+
+- If owned and currently equipped:
+  - Show a disabled button or label: “Equipped”.
+
+Ensure that the shop and equipped state are fully functional with real state changes and persistence.
+
+====================================================
+PART 4 – APPLYING COSMETICS TO UI
+====================================================
+
+Update the existing AI avatar display logic on the Home screen:
+
+1) Skins:
+
+- If `equippedSkin === "skin_default"`:
+  - Use the existing logic: emoji changes based on intelligenceLevel (🤖💤 / 🤖📚 / 🤖🚀) and the current caption (“Very basic model”, “Learning well”, “Highly trained”).
+- If `equippedSkin === "skin_glitched"`:
+  - Always use the chosen “Glitched Core” emoji/visual (e.g. 🧠💥 or similar).
+  - Add a CSS class to the avatar container, e.g. `.skin-glitched`, that applies a subtle glitch-style effect (like small shifts, borders, or animation).
+- If `equippedSkin === "skin_overclocked"`:
+  - Use the “Overclocked Core” emoji/visual (e.g. 🤖🔥).
+  - Add `.skin-overclocked` class to avatar container with a stronger glow/animation.
+
+2) Auras:
+
+- If `equippedAura` is set to one of the 3 aura IDs, apply a CSS class on the avatar container or wrapper:
+  - `"aura_blue"` → `.aura-blue`
+  - `"aura_purple"` → `.aura-purple`
+  - `"aura_green"` → `.aura-green`
+- Define CSS for these classes to add colored box-shadow or outline glows to the avatar container. The glow should be clearly visible but not overpower the UI.
+
+Make sure:
+
+- The avatar on the Home screen always reflects the currently equipped skin + aura combination (emoji + glow).
+- Equipping a new skin or aura in the shop updates the Home screen immediately without needing a refresh.
+
+====================================================
+PART 5 – INTEGRATION & POLISH
+====================================================
+
+- Keep all existing logic intact (wallet, token-gating, training, result calculations, AI chat, unlimited levels).
+- Ensure that Style Credits changes (earn + spend) are always saved to localStorage.
+- Style the Cosmetics Shop consistently with the existing dark, glassmorphic theme:
+  - Use the same card style, fonts, and colors.
+  - Use hover states on buttons and cosmetic cards.
+- Do NOT use placeholders or TODOs.
+- All prices, names, descriptions, and visuals must be fully implemented and visible to the user as real, usable content.
+
+When finished, the user should be able to:
+
+- See their Style Credits on Home and in the Shop.
+- Earn Style Credits from good training runs.
+- Open the Cosmetics Shop from Home.
+- Buy and equip from 3 avatar skins and 3 auras.
+- See the AI avatar change appearance based on equipped cosmetics every time they return to the Home screen.

@@ -1,0 +1,48 @@
+GOAL:
+1) Add OLLAMA_BASE_URL support properly.
+2) Add a backend health endpoint that checks Ollama.
+3) Update the /chat UI to show a clear status badge: “Ollama Connected” or “Ollama Offline (Using Fallback)”.
+4) In production, do NOT silently fallback if Ollama is unreachable. It must fail loudly (return an error) unless explicitly configured to allow fallback.
+
+REQUIREMENTS:
+- Backend:
+  - Read env var OLLAMA_BASE_URL (example: http://127.0.0.1:11434). If missing, treat Ollama as “offline”.
+  - Create endpoint: GET /api/health/ollama
+    - It should attempt a lightweight call to Ollama (preferred: GET {OLLAMA_BASE_URL}/api/tags).
+    - Return JSON like:
+      {
+        "ok": true/false,
+        "baseUrl": "...",
+        "model": optional string if detectable,
+        "error": optional string
+      }
+    - Include a short timeout (e.g., 2-3 seconds) so it doesn’t hang.
+  - Update any existing Ollama chat call code to:
+    - Use OLLAMA_BASE_URL consistently.
+    - If Ollama call fails:
+      - If env ALLOW_OLLAMA_FALLBACK=true (or NODE_ENV !== "production"), then fallback to the local response logic (current behavior).
+      - Otherwise return 503 with a clear error message like “Ollama unavailable. Please configure OLLAMA_BASE_URL or restore Ollama.”
+  - Add server logs when Ollama fails (include base URL and error).
+
+- Frontend:
+  - On /chat page, call GET /api/health/ollama on page load and display a small badge near the header:
+    - Green/Success style: “Ollama Connected”
+    - Red/Error style: “Ollama Offline (Using Fallback)” (or “Ollama Offline” if fallback disabled)
+  - If Ollama is offline and fallback is disabled, show a friendly UI warning explaining chat is temporarily unavailable.
+  - Do not break existing chat history storage.
+
+- Environment:
+  - Update .env.example (or equivalent) to include:
+    - OLLAMA_BASE_URL=
+    - ALLOW_OLLAMA_FALLBACK=true|false
+  - Ensure Replit secrets/env can set these.
+
+ACCEPTANCE TESTS (must pass):
+- If OLLAMA_BASE_URL points to a running Ollama, /api/health/ollama returns ok:true and /chat shows “Ollama Connected”.
+- If Ollama is stopped:
+  - In dev or with ALLOW_OLLAMA_FALLBACK=true, chat still works via fallback and badge shows offline + fallback.
+  - In production with ALLOW_OLLAMA_FALLBACK=false, chat requests return 503 and /chat shows “Ollama Offline” with a clear message.
+
+DELIVERABLE:
+- Implement the backend route + env behavior + frontend badge.
+- Tell me exactly what files you changed and what to set in Replit Secrets.
