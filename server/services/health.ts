@@ -2,6 +2,7 @@ import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { checkOllamaHealth } from "../aiChat";
 import { execSync } from "child_process";
+import { env } from "../env";
 
 const startTime = Date.now();
 
@@ -115,13 +116,8 @@ export async function getFullHealth(): Promise<HealthResponse> {
 export async function isReady(): Promise<boolean> {
   try {
     await db.execute(sql`SELECT 1`);
-    const requiredEnvVars = ["DATABASE_URL"];
-    for (const envVar of requiredEnvVars) {
-      if (!process.env[envVar]) {
-        return false;
-      }
-    }
-    return true;
+    // DATABASE_URL is validated in env.ts, just check if it exists
+    return !!env.DATABASE_URL;
   } catch {
     return false;
   }

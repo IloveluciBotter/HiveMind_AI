@@ -1,13 +1,16 @@
 import { Connection, PublicKey } from "@solana/web3.js";
+import { env } from "./env";
 
 // RPC endpoints with fallbacks (public endpoints have rate limits)
 const SOLANA_RPC_URLS = [
-  process.env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
+  env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
   "https://rpc.ankr.com/solana",
   "https://solana.public-rpc.com",
 ].filter(Boolean) as string[];
 
-const HIVE_MINT = process.env.HIVE_MINT || "F3zvEFZVhDXNo1kZDPg24Z3RioDzCdEJVdnZ5FCcpump";
+// HIVE_MINT must be set in production (validated in env.ts)
+// In development, it may be undefined (functions will handle gracefully)
+const HIVE_MINT = env.HIVE_MINT;
 
 // Token Program IDs
 const TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"; // Legacy SPL Token
@@ -66,6 +69,16 @@ export async function getHiveBalanceDetailed(walletAddress: string): Promise<Hiv
     let decimals = 6; // Default for HIVE
     let token2022Count = 0;
     let legacyCount = 0;
+
+    // Skip if HIVE_MINT not configured
+    if (!HIVE_MINT) {
+      return {
+        rawAmount: "0",
+        decimals: 6,
+        uiAmount: 0,
+        programUsed: "None",
+      };
+    }
 
     // Process Token-2022 accounts
     for (const accountInfo of token2022Accounts.value) {

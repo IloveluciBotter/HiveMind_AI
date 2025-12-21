@@ -153,7 +153,12 @@ export async function approveCorpusItem(id: string): Promise<boolean> {
   const { queueForEmbedding, computeContentHash } = await import("./embedWorker");
   
   const [item] = await db
-    .select({ title: trainingCorpusItems.title, normalizedText: trainingCorpusItems.normalizedText })
+    .select({ 
+      title: trainingCorpusItems.title, 
+      normalizedText: trainingCorpusItems.normalizedText,
+      createdByWallet: trainingCorpusItems.createdByWallet,
+      submitterWalletPubkey: trainingCorpusItems.submitterWalletPubkey,
+    })
     .from(trainingCorpusItems)
     .where(eq(trainingCorpusItems.id, id))
     .limit(1);
@@ -180,9 +185,70 @@ export async function approveCorpusItem(id: string): Promise<boolean> {
   }
 
   try {
-    await queueForEmbedding(id);
+    // Use new job queue instead of legacy embed worker
+    const { enqueueJob } = await import("./jobQueue");
+    await enqueueJob("embed_corpus_item", { corpusItemId: id });
+    logger.info({ corpusItemId: id, message: "Embedding job enqueued after approval" });
   } catch (error: any) {
-    logger.error({ error: error.message, corpusItemId: id, message: "Failed to queue for embedding after approval" });
+    logger.error({ error: error.message, corpusItemId: id, message: "Failed to enqueue embedding job after approval" });
+  }
+
+  // Record reward shares for the contributor (v2 system with difficulty, quality, usage)
+  // Use submitterWalletPubkey (preferred) or fallback to createdByWallet for legacy items
+  const submitterWallet = item.submitterWalletPubkey || item.createdByWallet;
+  if (submitterWallet) {
+    try {
+      const { storage } = await import("../storage");
+      const { 
+        calculateDifficultyScore, 
+        calculateQualityScore, 
+        calculateUsageScore, 
+        calculateShares,
+        recordSharesV2,
+        getCorpusItemUsageCount
+      } = await import("./rewardsDistributionV2");
+      const currentCycle = await storage.getCurrentCycle();
+      
+      if (currentCycle && process.env.REWARDS_SHARES_ENABLED !== "false") {
+        // Get current usage count
+        const usageCount = await getCorpusItemUsageCount(id);
+        
+        // Calculate component scores
+        // For corpus items, we don't have explicit complexity, so default to 2 (medium)
+        const complexity = 2; // Default medium complexity
+        const difficultyScore = calculateDifficultyScore(complexity);
+        
+        // Quality score: default 1.0 (no auto-review or consensus data available for corpus items)
+        const qualityScore = calculateQualityScore({});
+        
+        // Record baseShares (difficulty × quality) - usage computed at payout time
+        await recordSharesV2(
+          currentCycle.id,
+          submitterWallet,
+          "corpus_approved",
+          id,
+          difficultyScore,
+          qualityScore,
+          usageCount // Optional snapshot for reference
+        );
+        
+        logger.info({ 
+          corpusItemId: id, 
+          walletPubkey: item.createdByWallet,
+          baseShares: baseShares.toFixed(8),
+          difficultyScore,
+          qualityScore,
+          usageCount,
+          message: "Reward shares (v2) recorded for corpus approval" 
+        });
+      }
+    } catch (error: any) {
+      logger.error({ 
+        error: error.message, 
+        corpusItemId: id, 
+        message: "Failed to record reward shares v2 (non-blocking)" 
+      });
+    }
   }
 
   return true;
@@ -213,9 +279,12 @@ export async function createCorpusItem(data: {
 
   if (data.autoApprove) {
     try {
-      await embedCorpusItem(item.id);
+      // Enqueue job instead of embedding inline
+      const { enqueueJob } = await import("./jobQueue");
+      await enqueueJob("embed_corpus_item", { corpusItemId: item.id });
+      logger.info({ corpusItemId: item.id, message: "Embedding job enqueued for auto-approved item" });
     } catch (error: any) {
-      logger.error({ error: error.message, corpusItemId: item.id, message: "Failed to embed auto-approved item" });
+      logger.error({ error: error.message, corpusItemId: item.id, message: "Failed to enqueue embedding job for auto-approved item" });
     }
   }
 

@@ -1,3 +1,5 @@
+import { env } from "../env";
+
 export interface EconomyConfig {
   baseFeeHive: number;
   passThreshold: number;
@@ -9,12 +11,12 @@ export interface EconomyConfig {
 
 export function getEconomyConfig(): EconomyConfig {
   return {
-    baseFeeHive: parseFloat(process.env.ECON_BASE_FEE_HIVE || "1"),
-    passThreshold: parseFloat(process.env.ECON_PASS_THRESHOLD || "0.70"),
-    minPartialCostPct: parseFloat(process.env.ECON_MIN_PARTIAL_COST_PCT || "0.05"),
-    vaultAddress: process.env.HIVE_VAULT_ADDRESS || "",
-    mintAddress: process.env.HIVE_MINT || "",
-    rewardsWalletAddress: process.env.REWARDS_WALLET_ADDRESS || "",
+    baseFeeHive: env.ECON_BASE_FEE_HIVE,
+    passThreshold: env.ECON_PASS_THRESHOLD,
+    minPartialCostPct: env.ECON_MIN_PARTIAL_COST_PCT,
+    vaultAddress: env.HIVE_VAULT_ADDRESS || "",
+    mintAddress: env.HIVE_MINT || "",
+    rewardsWalletAddress: env.REWARDS_WALLET_ADDRESS || "",
   };
 }
 

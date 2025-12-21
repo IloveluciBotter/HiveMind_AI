@@ -1,3 +1,5 @@
+import { env } from "./env";
+
 const JUPITER_PRICE_API = "https://price.jup.ag/v4/price";
 
 interface JupiterPriceResponse {
@@ -27,7 +29,11 @@ const CACHE_TTL = 60 * 1000; // 60 seconds
  * Returns price in USD, or null if unavailable
  */
 export async function getHivePrice(): Promise<number | null> {
-  const HIVE_MINT = process.env.HIVE_MINT || "F3zvEFZVhDXNo1kZDPg24Z3RioDzCdEJVdnZ5FCcpump";
+  const HIVE_MINT = env.HIVE_MINT;
+  if (!HIVE_MINT) {
+    // Return null if HIVE_MINT not configured (price check will fail gracefully)
+    return null;
+  }
 
   // Check cache first
   const cached = priceCache.get(HIVE_MINT);

@@ -26,6 +26,11 @@ import {
   submitLimiter,
   corpusLimiter,
   reviewLimiter,
+  // Production rate limiters (15 minute windows)
+  defaultLimiter,
+  chatLimiter,
+  writeLimiter,
+  authLimiter,
 } from "./middleware/rateLimit";
 import { createAuditHelper } from "./services/audit";
 import { logger } from "./middleware/logger";
@@ -33,6 +38,9 @@ import { getFullHealth, isReady, isLive, isAiFallbackAllowed } from "./services/
 import { captureError } from "./sentry";
 import { seedDefaultTracks } from "./seed";
 import { getAutoReviewConfig, computeAutoReview, calculateStyleCredits, calculateIntelligenceGain } from "./services/autoReview";
+import { getDb, isDbConfigured } from "./db";
+import { sql } from "drizzle-orm";
+import { registerSolanaProxyRoutes } from "./routes/solanaProxy";
 
 // Helper to get user ID from session (simplified - you may want to add proper auth)
 function getUserId(req: Request): string | null {
@@ -94,6 +102,97 @@ export async function registerRoutes(
     logger.error({ error, message: "Failed to seed default tracks" });
   }
 
+  // ===== PRODUCTION HEALTH CHECKS =====
+  // These endpoints are used by load balancers and monitoring systems
+  // They do NOT require authentication
+
+  // GET /health - Basic app health check
+  app.get("/health", (req: Request, res: Response) => {
+    const version = process.env.APP_VERSION || "dev";
+    const env = process.env.NODE_ENV || "development";
+    res.status(200).json({
+      ok: true,
+      service: "hivemind",
+      version,
+      env,
+      time: new Date().toISOString(),
+    });
+  });
+
+  // GET /health/db - Database health check
+  app.get("/health/db", async (req: Request, res: Response) => {
+    try {
+      if (!isDbConfigured()) {
+        return res.status(503).json({
+          ok: false,
+          db: "down",
+          error: "DATABASE_URL not configured",
+          requestId: req.requestId,
+        });
+      }
+      const { sql } = await import("drizzle-orm");
+      const db = getDb();
+      await db.execute(sql`SELECT 1`);
+      res.status(200).json({ ok: true, db: "up" });
+    } catch (error: any) {
+      // Don't leak database connection details
+      const safeError = error.message || "Database connection failed";
+      res.status(503).json({ ok: false, db: "down", error: safeError });
+    }
+  });
+
+  // GET /health/ollama - Ollama service health check
+  app.get("/health/ollama", async (req: Request, res: Response) => {
+    const ollamaBaseUrl = process.env.OLLAMA_BASE_URL;
+    
+    if (!ollamaBaseUrl) {
+      return res.status(200).json({
+        ok: true,
+        ollama: "skipped",
+        reason: "OLLAMA_BASE_URL not set",
+      });
+    }
+
+    try {
+      // Use /api/tags endpoint - lightweight, doesn't require model specification
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+
+      const response = await fetch(`${ollamaBaseUrl}/api/tags`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          ...(process.env.OLLAMA_API_KEY ? { Authorization: `Bearer ${process.env.OLLAMA_API_KEY}` } : {}),
+        },
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return res.status(503).json({
+          ok: false,
+          ollama: "down",
+          error: `HTTP ${response.status}: ${response.statusText}`,
+        });
+      }
+
+      // If we get a response (even empty), Ollama is up
+      res.status(200).json({ ok: true, ollama: "up" });
+    } catch (error: any) {
+      // Don't leak API keys or full URLs in errors
+      const errorMessage = error.name === "AbortError"
+        ? "Connection timeout"
+        : error.message || "Ollama service unavailable";
+      
+      res.status(503).json({
+        ok: false,
+        ollama: "down",
+        error: errorMessage,
+      });
+    }
+  });
+
   app.get("/api/health", async (req: Request, res: Response) => {
     try {
       const health = await getFullHealth();
@@ -138,6 +237,9 @@ export async function registerRoutes(
     }
   });
 
+  // Register Solana RPC proxy routes (must be before other routes to avoid conflicts)
+  registerSolanaProxyRoutes(app);
+
   // Ollama health check (alias endpoint)
   app.get("/api/ai/ollama/health", async (req: Request, res: Response) => {
     try {
@@ -156,32 +258,43 @@ export async function registerRoutes(
   });
 
   // ===== AUTHENTICATION =====
-  
-  // Nonce endpoint - generates a secure, single-use nonce for wallet authentication
-  app.get("/api/auth/nonce", authNonceLimiter, async (req: Request, res: Response) => {
+  // Apply auth rate limiter (15 min window) + legacy 1 min limiter for extra protection
+  app.get("/api/auth/nonce", authLimiter, authNonceLimiter, async (req: Request, res: Response) => {
     try {
       const wallet = req.query.wallet as string;
       if (!wallet || wallet.length < 32) {
         return res.status(400).json({ error: "Valid wallet address required", code: "INVALID_WALLET" });
       }
 
-      const { nonce, message, expiresAt } = await issueNonce(wallet);
+      const { nonce, message, expiresAt } = await issueNonce(wallet, req);
       res.json({ nonce, message, expiresAt: expiresAt.toISOString() });
-    } catch (error) {
-      logger.error({ requestId: req.requestId, error: "Nonce generation error", details: error });
-      res.status(500).json({ error: "Failed to generate nonce" });
+    } catch (error: any) {
+      const errorMessage = error?.message || String(error);
+      const errorStack = error?.stack;
+      logger.error({ 
+        requestId: req.requestId, 
+        error: "Nonce generation error", 
+        message: errorMessage,
+        stack: errorStack,
+        details: error 
+      });
+      // Include error message in response for debugging (in development)
+      const responseError = process.env.NODE_ENV === "development" 
+        ? { error: "Failed to generate nonce", message: errorMessage }
+        : { error: "Failed to generate nonce" };
+      res.status(500).json(responseError);
     }
   });
 
   // Legacy challenge endpoint (redirects to nonce)
-  app.get("/api/auth/challenge", authNonceLimiter, async (req: Request, res: Response) => {
+  app.get("/api/auth/challenge", authLimiter, authNonceLimiter, async (req: Request, res: Response) => {
     try {
       const publicKey = req.query.publicKey as string;
       if (!publicKey || publicKey.length < 32) {
         return res.status(400).json({ error: "Valid publicKey query parameter required" });
       }
 
-      const { nonce, message, expiresAt } = await issueNonce(publicKey);
+      const { nonce, message, expiresAt } = await issueNonce(publicKey, req);
       res.json({ nonce, message, expiresAt: expiresAt.toISOString() });
     } catch (error) {
       logger.error({ requestId: req.requestId, error: "Challenge generation error", details: error });
@@ -198,23 +311,24 @@ export async function registerRoutes(
     message: "Either wallet or publicKey is required",
   });
 
-  app.post("/api/auth/verify", authVerifyLimiter, async (req: Request, res: Response) => {
+  app.post("/api/auth/verify", authLimiter, authVerifyLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
       const body = verifySchema.parse(req.body);
       const walletAddress = body.wallet || body.publicKey!;
 
-      // Consume nonce (single-use, validates expiry)
-      const nonceResult = await consumeNonce(walletAddress, body.nonce);
+      // Consume nonce (single-use, validates expiry, checks IP hash)
+      const nonceResult = await consumeNonce(walletAddress, body.nonce, req);
       if (!nonceResult.valid || !nonceResult.message) {
         await audit.log("login_failure", {
           targetType: "session",
           metadata: { reason: "invalid_nonce", wallet: walletAddress },
           overrideWallet: walletAddress,
         });
-        return res.status(400).json({ 
-          error: nonceResult.error || "Invalid or expired nonce",
-          code: "INVALID_NONCE"
+        return res.status(401).json({ 
+          ok: false,
+          error: "invalid_nonce",
+          message: "Nonce expired or already used. Please try again."
         });
       }
 
@@ -226,13 +340,21 @@ export async function registerRoutes(
           metadata: { reason: "invalid_signature", wallet: walletAddress },
           overrideWallet: walletAddress,
         });
-        return res.status(401).json({ error: "Invalid signature", code: "INVALID_SIGNATURE" });
+        return res.status(401).json({ 
+          ok: false,
+          error: "invalid_signature",
+          message: "Invalid signature"
+        });
       }
 
       // Create server-side session
       const { sessionToken, expiresAt } = await createSession(walletAddress);
 
-      // Set httpOnly cookie with raw session token
+      // Regenerate session ID to prevent session fixation attacks
+      // Clear any existing session cookie first
+      res.clearCookie("sid", { path: "/" });
+
+      // Set secure httpOnly cookie with raw session token
       res.cookie("sid", sessionToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
@@ -311,7 +433,7 @@ export async function registerRoutes(
   });
 
   // ===== TRACKS & QUESTIONS =====
-  app.get("/api/tracks", publicReadLimiter, async (req: Request, res: Response) => {
+  app.get("/api/tracks", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
     try {
       const tracks = await storage.getAllTracks();
       res.json(tracks);
@@ -320,19 +442,29 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/tracks/:trackId/questions", publicReadLimiter, async (req: Request, res: Response) => {
+  app.get("/api/tracks/:trackId/questions", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
     try {
       const questions = await storage.getQuestionsByTrack(req.params.trackId);
-      res.json(questions);
+      // Exclude numericAnswer from response (security: don't send correct answers to client)
+      const sanitized = questions.map(q => {
+        const { numericAnswer, ...rest } = q;
+        return rest;
+      });
+      res.json(sanitized);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch questions" });
     }
   });
 
-  app.get("/api/benchmark-questions", publicReadLimiter, async (req: Request, res: Response) => {
+  app.get("/api/benchmark-questions", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
     try {
       const questions = await storage.getBenchmarkQuestions();
-      res.json(questions);
+      // Exclude numericAnswer from response (security: don't send correct answers to client)
+      const sanitized = questions.map(q => {
+        const { numericAnswer, ...rest } = q;
+        return rest;
+      });
+      res.json(sanitized);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch benchmark questions" });
     }
@@ -431,7 +563,7 @@ export async function registerRoutes(
   });
 
   // ===== CYCLES =====
-  app.get("/api/cycles/current", publicReadLimiter, async (req: Request, res: Response) => {
+  app.get("/api/cycles/current", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
     try {
       const cycle = await storage.getCurrentCycle();
       res.json(cycle);
@@ -612,7 +744,7 @@ export async function registerRoutes(
     sourceAttemptId: z.string().optional(),
   });
 
-  app.post("/api/corpus", requireAuthMiddleware, requireCreator, corpusLimiter, async (req: Request, res: Response) => {
+  app.post("/api/corpus", requireAuthMiddleware, requireCreator, writeLimiter, corpusLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
       const body = addCorpusItemSchema.parse(req.body);
@@ -624,11 +756,15 @@ export async function registerRoutes(
       // Normalize the text
       const normalizedText = normalizeText(body.text);
       
+      // Get submitter wallet from authenticated session (never from client body)
+      const submitterWalletPubkey = (req as any).walletAddress;
+      
       const item = await storage.addCorpusItem({
         trackId: body.trackId,
         cycleId: currentCycle.id,
         normalizedText,
         sourceAttemptId: body.sourceAttemptId,
+        submitterWalletPubkey, // Store session wallet (server source of truth)
       });
       
       await audit.log("corpus_item_added", {
@@ -653,7 +789,7 @@ export async function registerRoutes(
     trackId: z.string().optional(),
   });
 
-  app.put("/api/corpus/:id", requireAuthMiddleware, requireCreator, corpusLimiter, async (req: Request, res: Response) => {
+  app.put("/api/corpus/:id", requireAuthMiddleware, requireCreator, writeLimiter, corpusLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
       const body = updateCorpusItemSchema.parse(req.body);
@@ -706,7 +842,7 @@ export async function registerRoutes(
   });
 
   // Delete corpus item (Creator only)
-  app.delete("/api/corpus/:id", requireAuthMiddleware, requireCreator, corpusLimiter, async (req: Request, res: Response) => {
+  app.delete("/api/corpus/:id", requireAuthMiddleware, requireCreator, writeLimiter, corpusLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
       await audit.log("corpus_item_deleted", {
@@ -764,20 +900,20 @@ export async function registerRoutes(
     }
   });
 
-  // Embed a corpus item (admin only)
+  // Embed a corpus item (admin only) - now enqueues a job
   app.post("/api/rag/embed/:id", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
     try {
-      const { embedCorpusItem } = await import("./services/rag");
-      const chunksCreated = await embedCorpusItem(req.params.id);
-      res.json({ success: true, chunksCreated });
+      const { enqueueJob } = await import("./services/jobQueue");
+      const jobId = await enqueueJob("embed_corpus_item", { corpusItemId: req.params.id });
+      res.json({ success: true, jobId, message: "Embedding job enqueued" });
     } catch (error: any) {
-      logger.error({ requestId: req.requestId, error: "Embedding error", details: error.message });
-      res.status(500).json({ error: error.message || "Failed to embed corpus item" });
+      logger.error({ requestId: req.requestId, error: "Job enqueue error", details: error.message });
+      res.status(500).json({ error: error.message || "Failed to enqueue embedding job" });
     }
   });
 
   // Approve corpus item and auto-embed (admin only)
-  app.post("/api/corpus/:id/approve", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+  app.post("/api/corpus/:id/approve", requireAuthMiddleware, requireCreator, writeLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
       const { approveCorpusItem } = await import("./services/rag");
@@ -820,39 +956,85 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/corpus/:id/retry-embed", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+  app.post("/api/corpus/:id/retry-embed", requireAuthMiddleware, requireCreator, writeLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
-      const { retryEmbedding } = await import("./services/embedWorker");
-      await retryEmbedding(req.params.id);
+      // Enqueue a new embedding job instead of using legacy retry
+      const { enqueueJob } = await import("./services/jobQueue");
+      const jobId = await enqueueJob("embed_corpus_item", { corpusItemId: req.params.id });
       
       await audit.log("corpus_embed_retry", {
         targetType: "corpus_item",
         targetId: req.params.id,
+        metadata: { jobId },
       });
       
-      res.json({ success: true, message: "Corpus item reset for retry" });
+      res.json({ success: true, jobId, message: "Embedding job enqueued for retry" });
     } catch (error: any) {
       logger.error({ requestId: req.requestId, error: "Retry embed error", details: error.message });
-      res.status(400).json({ error: error.message || "Failed to retry embedding" });
+      res.status(400).json({ error: error.message || "Failed to enqueue embedding job" });
     }
   });
 
-  app.post("/api/corpus/:id/force-reembed", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+  app.post("/api/corpus/:id/force-reembed", requireAuthMiddleware, requireCreator, writeLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     try {
-      const { forceReembed } = await import("./services/embedWorker");
-      await forceReembed(req.params.id);
+      // Clear existing chunks first
+      const { db } = await import("./db");
+      const { corpusChunks } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+      await db.delete(corpusChunks).where(eq(corpusChunks.corpusItemId, req.params.id));
+      
+      // Enqueue a new embedding job
+      const { enqueueJob } = await import("./services/jobQueue");
+      const jobId = await enqueueJob("embed_corpus_item", { corpusItemId: req.params.id });
       
       await audit.log("corpus_force_reembed", {
         targetType: "corpus_item",
         targetId: req.params.id,
+        metadata: { jobId },
       });
       
-      res.json({ success: true, message: "Corpus item queued for re-embedding, old chunks cleared" });
+      res.json({ success: true, jobId, message: "Corpus item queued for re-embedding, old chunks cleared" });
     } catch (error: any) {
       logger.error({ requestId: req.requestId, error: "Force re-embed error", details: error.message });
       res.status(400).json({ error: error.message || "Failed to force re-embed" });
+    }
+  });
+
+  // ===== JOB QUEUE MANAGEMENT (Admin/Creator Only) =====
+  
+  // Get jobs by status
+  app.get("/api/jobs", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    try {
+      const { getJobsByStatus } = await import("./services/jobQueue");
+      const status = req.query.status as "pending" | "running" | "succeeded" | "failed" | undefined;
+      const limit = Math.min(parseInt(req.query.limit as string) || 50, 100);
+      
+      const jobs = await getJobsByStatus(status, limit);
+      res.json({ jobs, count: jobs.length });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Get jobs error", details: error.message });
+      res.status(500).json({ error: "Failed to fetch jobs" });
+    }
+  });
+
+  // Retry a failed job
+  app.post("/api/jobs/:id/retry", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const { retryJob } = await import("./services/jobQueue");
+      await retryJob(req.params.id);
+      
+      await audit.log("job_retry", {
+        targetType: "job",
+        targetId: req.params.id,
+      });
+      
+      res.json({ success: true, message: "Job reset for retry" });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Retry job error", details: error.message });
+      res.status(400).json({ error: error.message || "Failed to retry job" });
     }
   });
 
@@ -863,7 +1045,7 @@ export async function registerRoutes(
     aiLevel: z.number().int().min(1).max(100),
   });
 
-  app.post("/api/ai/chat", requireAuthMiddleware, requireHiveAccess, chatLimiterWallet, chatLimiterIp, async (req: Request, res: Response) => {
+  app.post("/api/ai/chat", requireAuthMiddleware, requireHiveAccess, chatLimiter, chatLimiterWallet, chatLimiterIp, async (req: Request, res: Response) => {
     try {
       const body = chatMessageSchema.parse(req.body);
       const publicKey = (req as any).publicKey;
@@ -916,6 +1098,20 @@ export async function registerRoutes(
         logger.warn({ requestId: req.requestId, message: "Using fallback AI response in development mode" });
       }
       
+      // Track usage for corpus items (increment usageCountCycle)
+      if (corpusItemsUsed.length > 0) {
+        try {
+          const { incrementCorpusItemUsage } = await import("./services/rewardsDistributionV2");
+          await incrementCorpusItemUsage(corpusItemsUsed);
+        } catch (error: any) {
+          logger.error({ 
+            requestId: req.requestId, 
+            error: "Failed to track corpus item usage (non-blocking)", 
+            details: error.message 
+          });
+        }
+      }
+      
       // Save to chat history
       const chatMessage = await storage.saveChatMessage({
         walletAddress: publicKey,
@@ -926,6 +1122,11 @@ export async function registerRoutes(
         corpusItemsUsed,
       });
       
+      // Get active model version metadata
+      const { getActiveModelVersion, getCurrentCorpusHash } = await import("./services/modelVersioning");
+      const activeVersion = await getActiveModelVersion();
+      const corpusHash = await getCurrentCorpusHash();
+
       res.json({
         id: chatMessage.id,
         response,
@@ -934,6 +1135,10 @@ export async function registerRoutes(
         track: body.track,
         sources,
         isGrounded,
+        metadata: {
+          activeModelVersionId: activeVersion?.id || null,
+          corpusHash,
+        },
       });
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -968,6 +1173,7 @@ export async function registerRoutes(
       
       res.json({
         stakeHive: parseFloat(balance.trainingStakeHive),
+        level: balance.level,
         vaultAddress: config.vaultAddress,
         mintAddress: config.mintAddress,
       });
@@ -1122,14 +1328,14 @@ export async function registerRoutes(
     trackId: z.string(),
     difficulty: z.enum(["low", "medium", "high", "extreme"]),
     content: z.string().min(1),
-    answers: z.array(z.number()).optional(),
-    correctAnswers: z.array(z.number()).optional(),
-    questionIds: z.array(z.string()).optional(),
+    answers: z.array(z.union([z.number(), z.string()])),
+    questionIds: z.array(z.string()),
     startTime: z.number().optional(),
     levelAtTime: z.number().optional(),
+    // correctAnswers is explicitly NOT accepted - server is source of truth
   });
 
-  app.post("/api/train-attempts/submit", requireAuthMiddleware, requireHiveAccess, submitLimiter, async (req: Request, res: Response) => {
+  app.post("/api/train-attempts/submit", requireAuthMiddleware, requireHiveAccess, writeLimiter, submitLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     const publicKey = (req as any).publicKey;
     if (!publicKey) {
@@ -1162,16 +1368,73 @@ export async function registerRoutes(
       
       const cost = getCostByDifficulty(body.difficulty);
       
-      // Calculate score and duration
-      let scorePct = 0;
-      let attemptDurationSec = 0;
-      
-      if (body.answers && body.correctAnswers && body.answers.length > 0) {
-        const correctCount = body.answers.reduce((count, answer, idx) => {
-          return count + (answer === body.correctAnswers![idx] ? 1 : 0);
-        }, 0);
-        scorePct = correctCount / body.answers.length;
+      // Validate questionIds and answers match
+      if (!body.questionIds || !body.answers || body.questionIds.length !== body.answers.length) {
+        return res.status(400).json({ 
+          error: "Invalid payload",
+          message: "questionIds and answers arrays must have the same length"
+        });
       }
+
+      if (body.questionIds.length === 0) {
+        return res.status(400).json({ 
+          error: "Invalid payload",
+          message: "At least one question is required"
+        });
+      }
+
+      // Validate questionIds are valid UUIDs and exist
+      const questions = await Promise.all(
+        body.questionIds.map(id => storage.getQuestionById(id))
+      );
+
+      const invalidQuestions = questions.filter((q, idx) => !q);
+      if (invalidQuestions.length > 0) {
+        const invalidIds = body.questionIds.filter((_, idx) => !questions[idx]);
+        return res.status(400).json({ 
+          error: "Invalid question IDs",
+          message: `Questions not found: ${invalidIds.join(", ")}`
+        });
+      }
+
+      // Calculate score server-side (ANTI-CHEAT: ignore any client-provided correctness)
+      const questionResults: Array<{ questionId: string; correct: boolean }> = [];
+      let correctCount = 0;
+
+      for (let i = 0; i < body.answers.length; i++) {
+        const question = questions[i]!;
+        const userAnswer = body.answers[i];
+        let isCorrect = false;
+
+        if (question.questionType === "numeric") {
+          // Numeric grading
+          const { gradeNumeric } = await import("./utils/numericGrade");
+          const tolerance = question.numericTolerance ? parseFloat(question.numericTolerance) : null;
+          const result = gradeNumeric(
+            typeof userAnswer === "string" ? userAnswer : String(userAnswer),
+            question.numericAnswer || null,
+            tolerance
+          );
+          isCorrect = result.correct;
+        } else {
+          // MCQ grading
+          const correctIndex = question.correctIndex;
+          const userIndex = typeof userAnswer === "number" ? userAnswer : parseInt(String(userAnswer), 10);
+          isCorrect = userIndex === correctIndex;
+        }
+
+        questionResults.push({
+          questionId: question.id,
+          correct: isCorrect,
+        });
+
+        if (isCorrect) {
+          correctCount++;
+        }
+      }
+
+      const scorePct = correctCount / body.answers.length;
+      let attemptDurationSec = 0;
       
       if (body.startTime) {
         attemptDurationSec = Math.floor((Date.now() - body.startTime) / 1000);
@@ -1182,8 +1445,9 @@ export async function registerRoutes(
         phrases: [],
         topics: [],
         timestamp: new Date().toISOString(),
-        answersGiven: body.answers || [],
-        correctAnswers: body.correctAnswers || [],
+        answersGiven: body.answers,
+        questionIds: body.questionIds,
+        questionResults, // Server-calculated results
         scorePct,
         attemptDurationSec,
       };
@@ -1202,8 +1466,10 @@ export async function registerRoutes(
       });
       
       // Create the attempt
+      // Store submitter wallet from authenticated session (never from client body)
+      const submitterWalletPubkey = publicKey; // Already validated from session via requireAuthMiddleware
       const attempt = await storage.createTrainAttempt({
-        userId: publicKey,
+        userId: publicKey, // Note: This seems to be used as wallet address, may need refactor
         trackId: body.trackId,
         difficulty: body.difficulty,
         cost,
@@ -1211,6 +1477,7 @@ export async function registerRoutes(
         cycleId: currentCycle.id,
         scorePct: scorePct.toFixed(4),
         attemptDurationSec,
+        submitterWalletPubkey, // Store session wallet (server source of truth)
       });
       
       await audit.log("submission_created", {
@@ -1223,6 +1490,15 @@ export async function registerRoutes(
       const autoReviewConfig = getAutoReviewConfig();
       const reviewResult = computeAutoReview(scorePct, attemptDurationSec, autoReviewConfig);
       
+      // Calculate style credits and intelligence gain
+      const { calculateStyleCredits, calculateIntelligenceGain } = await import("./services/autoReview");
+      const styleCreditsEarnedValue = reviewResult.decision === "approved" 
+        ? calculateStyleCredits(scorePct, body.difficulty)
+        : 0;
+      const intelligenceGainValue = reviewResult.decision === "approved"
+        ? calculateIntelligenceGain(scorePct, body.difficulty)
+        : 0;
+      
       // Update attempt with auto-review result
       const updatedAttempt = await storage.updateAttemptAutoReview(attempt.id, {
         status: reviewResult.decision,
@@ -1230,6 +1506,32 @@ export async function registerRoutes(
         attemptDurationSec,
         autoReviewedAt: reviewResult.autoReviewedAt,
         evidencePacket,
+      });
+
+      // Return results including per-question grading (server-calculated, anti-cheat)
+      res.json({
+        id: updatedAttempt.id,
+        status: updatedAttempt.status,
+        questionResults, // Per-question correctness (server-calculated)
+        score: {
+          correctCount,
+          total: body.answers.length,
+          percent: scorePct,
+        },
+        autoReview: {
+          decision: reviewResult.decision,
+          message: reviewResult.message,
+          scorePct,
+          attemptDurationSec,
+          styleCreditsEarned: styleCreditsEarnedValue,
+          intelligenceGain: intelligenceGainValue,
+        },
+        economy: {
+          feeHive,
+          costHive: 0, // Will be calculated by settlement
+          refundHive: 0, // Will be calculated by settlement
+          stakeAfter: stakeAfterReserve,
+        },
       });
       
       // Calculate fee settlement based on score
@@ -1286,6 +1588,80 @@ export async function registerRoutes(
       if (reviewResult.decision === "approved") {
         styleCreditsEarned = calculateStyleCredits(scorePct, body.difficulty);
         intelligenceGain = calculateIntelligenceGain(scorePct, body.difficulty);
+        
+        // Record reward shares for approved submission (v2 system)
+        try {
+          if (process.env.REWARDS_SHARES_ENABLED !== "false") {
+            const { 
+              calculateDifficultyScore, 
+              calculateQualityScore, 
+              calculateUsageScore, 
+              calculateShares,
+              recordSharesV2,
+              getCorpusItemUsageCount
+            } = await import("./services/rewardsDistributionV2");
+            
+            if (currentCycle && publicKey) {
+              // Get corpus item if this attempt created one (check by sourceAttemptId = attempt.id)
+              let corpusItem = null;
+              try {
+                const { trainingCorpusItems } = await import("@shared/schema");
+                const { db } = await import("./db");
+                const { eq } = await import("drizzle-orm");
+                const [item] = await db
+                  .select()
+                  .from(trainingCorpusItems)
+                  .where(eq(trainingCorpusItems.sourceAttemptId, attempt.id))
+                  .limit(1);
+                corpusItem = item || null;
+              } catch (error: any) {
+                // Ignore errors, corpusItem will be null
+              }
+              
+              // Calculate component scores
+              const difficultyMap: Record<string, number> = {
+                low: 1,
+                medium: 2,
+                high: 3,
+                extreme: 5,
+              };
+              const complexity = difficultyMap[body.difficulty] || 1;
+              const difficultyScore = calculateDifficultyScore(complexity);
+              
+              // Quality score: use auto-review score and consensus if available
+              const consensus = await storage.checkReviewConsensus(attempt.id, body.difficulty);
+              const qualityScore = calculateQualityScore({
+                autoReviewScore: scorePct,
+                consensusApproveCount: consensus.approveCount,
+                consensusTotalCount: consensus.approveCount + consensus.rejectCount,
+              });
+              
+              // Usage count: if corpus item exists, get current usage; otherwise 0
+              // This is just a snapshot for reference - final usage computed at payout time
+              const usageCountSnapshot = corpusItem 
+                ? await getCorpusItemUsageCount(corpusItem.id)
+                : 0;
+              
+              // Record baseShares (difficulty × quality) - usage computed at payout time
+              const refId = corpusItem?.id || attempt.id;
+              await recordSharesV2(
+                currentCycle.id,
+                publicKey,
+                "corpus_approved",
+                refId,
+                difficultyScore,
+                qualityScore,
+                usageCountSnapshot // Optional snapshot for reference
+              );
+            }
+          }
+        } catch (error: any) {
+          logger.error({ 
+            error: error.message, 
+            attemptId: attempt.id, 
+            message: "Failed to record reward shares v2 (non-blocking)" 
+          });
+        }
       }
       
       // Log audit based on decision
@@ -1315,19 +1691,36 @@ export async function registerRoutes(
           body.questionIds.length === body.answers.length &&
           body.answers.length > 0) {
         try {
-          const answerEvents = body.answers.map((answer, idx) => ({
-            walletAddress: publicKey,
-            attemptId: attempt.id,
-            trackId: body.trackId,
-            questionId: body.questionIds![idx],
-            selectedAnswer: answer,
-            isCorrect: body.correctAnswers ? answer === body.correctAnswers[idx] : false,
-            scorePct: scorePct.toFixed(4),
-            attemptDurationSec,
-            levelAtTime: body.levelAtTime,
-            autoDecision: reviewResult.decision,
-            cycleNumber: currentCycle.cycleNumber,
-          }));
+          // Use server-calculated questionResults for isCorrect (anti-cheat)
+          const answerEvents = body.answers.map((answer, idx) => {
+            const questionResult = questionResults[idx];
+            const question = questions[idx];
+            // Convert answer to number for answerEvents (numeric answers need encoding)
+            // For MCQ: answer is already a number (index)
+            // For numeric: convert string to a hash-like number (simple approach: use char codes sum)
+            let selectedAnswerNum: number;
+            if (typeof answer === "string") {
+              // For numeric answers, create a numeric representation
+              // Simple hash: sum of char codes mod a large number
+              selectedAnswerNum = answer.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) % 1000000;
+            } else {
+              selectedAnswerNum = answer;
+            }
+            
+            return {
+              walletAddress: publicKey,
+              attemptId: attempt.id,
+              trackId: body.trackId,
+              questionId: body.questionIds![idx],
+              selectedAnswer: selectedAnswerNum,
+              isCorrect: questionResult ? questionResult.correct : false, // Server-calculated
+              scorePct: scorePct.toFixed(4),
+              attemptDurationSec,
+              levelAtTime: body.levelAtTime,
+              autoDecision: reviewResult.decision,
+              cycleNumber: currentCycle.cycleNumber,
+            };
+          });
           
           const loggedCount = await storage.createAnswerEventsBatch(answerEvents);
           
@@ -1411,13 +1804,19 @@ export async function registerRoutes(
     vote: z.enum(["approve", "reject"]),
   });
 
-  app.post("/api/reviews/submit", reviewLimiter, async (req: Request, res: Response) => {
+  app.post("/api/reviews/submit", requireAuthMiddleware, writeLimiter, reviewLimiter, async (req: Request, res: Response) => {
     const audit = createAuditHelper(req);
     const reviewerId = await requireReviewer(req, res);
     if (!reviewerId) return;
     
     try {
       const body = submitReviewSchema.parse(req.body);
+      
+      // Get reviewer wallet address from authenticated session (never from client body)
+      const reviewerWalletAddress = (req as any).walletAddress;
+      if (!reviewerWalletAddress) {
+        return res.status(401).json({ error: "Unauthorized: Session wallet address required" });
+      }
       
       // Check if already voted
       const hasVoted = await storage.hasReviewerVoted(body.attemptId, reviewerId);
@@ -1434,7 +1833,8 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Attempt already reviewed" });
       }
       
-      const review = await storage.createReview(body.attemptId, reviewerId, body.vote);
+      // Store review with session wallet address (never trust client body)
+      const review = await storage.createReview(body.attemptId, reviewerId, body.vote, reviewerWalletAddress);
       
       await audit.log("review_vote", {
         targetType: "review",
@@ -1448,6 +1848,70 @@ export async function registerRoutes(
       if (consensus.met) {
         // Approve attempt
         await storage.updateAttemptStatus(body.attemptId, "approved");
+        
+        // Record reviewer shares for reviewers who helped approve
+        try {
+          if (process.env.REWARDS_SHARES_ENABLED !== "false") {
+            const { recordReviewerSharesByWallet } = await import("./services/rewardsDistributionV2");
+            const currentCycle = await storage.getCurrentCycle();
+            
+            if (currentCycle) {
+              // Get all approve votes for this attempt
+              const reviews = await storage.getReviewsForAttempt(body.attemptId);
+              const approveReviews = reviews.filter(r => r.vote === "approve");
+              
+              // Collect reviewer wallet addresses from reviews that have them
+              // Security: Only reviews with reviewerWalletAddress are counted for rewards.
+              // All new reviews have reviewerWalletAddress from authenticated session (never from client body).
+              // Historical reviews with null wallets are skipped (cannot earn rewards).
+              const reviewerWalletPubkeys: string[] = [];
+              for (const review of approveReviews) {
+                if (review.reviewerWalletAddress) {
+                  reviewerWalletPubkeys.push(review.reviewerWalletAddress);
+                }
+              }
+              
+              // Get submitter's wallet address from the attempt
+              // Attempts now store submitterWalletPubkey from session wallet at creation time
+              const submitterWalletPubkey = attempt.submitterWalletPubkey || null;
+              
+              // Warn if submitterWalletPubkey is null (legacy row) - self-review protection won't apply
+              if (!submitterWalletPubkey) {
+                logger.warn({
+                  requestId: req.requestId,
+                  message: "Attempt missing submitterWalletPubkey (legacy row) - self-review protection not enforced",
+                  attemptId: body.attemptId,
+                });
+              }
+              
+              // Map difficulty to complexity
+              const difficultyMap: Record<string, number> = {
+                low: 1,
+                medium: 2,
+                high: 3,
+                extreme: 5,
+              };
+              const complexity = difficultyMap[attempt.difficulty] || 1;
+              
+              // Record reviewer shares (if we have wallet addresses)
+              if (reviewerWalletPubkeys.length > 0) {
+                await recordReviewerSharesByWallet(
+                  currentCycle.id,
+                  body.attemptId,
+                  reviewerWalletPubkeys,
+                  submitterWalletPubkey,
+                  complexity
+                );
+              }
+            }
+          }
+        } catch (error: any) {
+          logger.error({ 
+            requestId: req.requestId,
+            error: "Failed to record reviewer shares (non-blocking)", 
+            details: error.message 
+          });
+        }
         
         // Process economics: refund 80%, lock 20%, add 5% from pool
         const cost = parseFloat(attempt.cost);
@@ -1505,7 +1969,7 @@ export async function registerRoutes(
   });
 
   // ===== HUB =====
-  app.get("/api/hub/posts", async (req: Request, res: Response) => {
+  app.get("/api/hub/posts", defaultLimiter, async (req: Request, res: Response) => {
     try {
       const limit = req.query.limit ? parseInt(req.query.limit as string) : 50;
       const posts = await storage.getHubPosts(limit);
@@ -1663,6 +2127,143 @@ export async function registerRoutes(
     } catch (error) {
       logger.error({ requestId: req.requestId, error: "Failed to fetch pending attempts", details: error });
       res.status(500).json({ error: "Failed to fetch pending attempts" });
+    }
+  });
+
+  app.post("/api/rewards/cycles/:cycleId/calculate", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    try {
+      const cycleId = req.params.cycleId;
+      // Use v2 system if enabled, otherwise fall back to v1
+      const useV2 = process.env.REWARDS_SHARES_ENABLED !== "false";
+      
+      if (useV2) {
+        const { calculateCyclePayoutsV2 } = await import("./services/rewardsDistributionV2");
+        const result = await calculateCyclePayoutsV2(cycleId);
+        
+        if (!result.success) {
+          if (result.error?.includes("already calculated")) {
+            return res.status(409).json({
+              ok: false,
+              error: "Payouts already calculated for this cycle",
+              payoutCount: result.payoutCount,
+            });
+          }
+          return res.status(400).json({
+            ok: false,
+            error: result.error || "Failed to calculate payouts",
+          });
+        }
+        
+        res.json({
+          ok: true,
+          payoutCount: result.payoutCount,
+          totalPool: result.totalPool,
+          totalShares: result.totalShares,
+        });
+      } else {
+        const { calculateCyclePayouts } = await import("./services/rewardsDistribution");
+        const result = await calculateCyclePayouts(cycleId);
+        
+        if (!result.success) {
+          if (result.error?.includes("already calculated")) {
+            return res.status(409).json({
+              ok: false,
+              error: "Payouts already calculated for this cycle",
+              payoutCount: result.payoutCount,
+            });
+          }
+          return res.status(400).json({
+            ok: false,
+            error: result.error || "Failed to calculate payouts",
+          });
+        }
+        
+        res.json({
+          ok: true,
+          payoutCount: result.payoutCount,
+          totalPool: result.totalPool,
+          totalShares: result.totalShares,
+        });
+      }
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Failed to calculate cycle payouts", details: error });
+      res.status(500).json({ error: "Failed to calculate cycle payouts" });
+    }
+  });
+
+  app.get("/api/rewards/me", requireAuthMiddleware, async (req: Request, res: Response) => {
+    try {
+      const publicKey = (req as any).publicKey;
+      // Use v2 system if enabled, otherwise fall back to v1
+      const useV2 = process.env.REWARDS_SHARES_ENABLED !== "false";
+      
+      if (useV2) {
+        const { getUserRewardsV2 } = await import("./services/rewardsDistributionV2");
+        const rewards = await getUserRewardsV2(publicKey);
+        
+        res.json({
+          ok: true,
+          currentCycleShares: rewards.currentCycleShares,
+          estimatedPayout: rewards.estimatedPayout,
+          recentPayouts: rewards.recentPayouts,
+        });
+      } else {
+        const { getUserRewards } = await import("./services/rewardsDistribution");
+        const rewards = await getUserRewards(publicKey);
+        
+        res.json({
+          ok: true,
+          currentCycleShares: rewards.currentCycleShares,
+          estimatedPayout: rewards.estimatedPayout,
+          recentPayouts: rewards.recentPayouts,
+        });
+      }
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Failed to get user rewards", details: error });
+      res.status(500).json({ error: "Failed to get user rewards" });
+    }
+  });
+
+  app.get("/api/rewards/pool", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    try {
+      const { rewardsPoolLedger } = await import("@shared/schema");
+      const { db } = await import("./db");
+      const { sql, eq, desc } = await import("drizzle-orm");
+      
+      // Get totals
+      const totals = await db
+        .select({
+          totalRecorded: sql<number>`COALESCE(SUM(${rewardsPoolLedger.amountHive}::numeric), 0)`,
+          totalTransferred: sql<number>`COALESCE(SUM(CASE WHEN ${rewardsPoolLedger.status} = 'transferred' THEN ${rewardsPoolLedger.amountHive}::numeric ELSE 0 END), 0)`,
+          pendingCount: sql<number>`COUNT(CASE WHEN ${rewardsPoolLedger.status} IN ('recorded', 'pending_transfer') THEN 1 END)`,
+        })
+        .from(rewardsPoolLedger);
+
+      // Get recent entries
+      const recent = await db
+        .select()
+        .from(rewardsPoolLedger)
+        .orderBy(desc(rewardsPoolLedger.createdAt))
+        .limit(50);
+
+      res.json({
+        ok: true,
+        totalRecorded: parseFloat(totals[0].totalRecorded.toString()),
+        totalTransferred: parseFloat(totals[0].totalTransferred.toString()),
+        pendingCount: parseInt(totals[0].pendingCount.toString(), 10),
+        recent: recent.map((entry) => ({
+          id: entry.id,
+          source: entry.source,
+          amountHive: parseFloat(entry.amountHive),
+          status: entry.status,
+          txSignature: entry.txSignature,
+          walletPubkey: entry.walletPubkey,
+          createdAt: entry.createdAt,
+        })),
+      });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Failed to fetch rewards pool", details: error });
+      res.status(500).json({ error: "Failed to fetch rewards pool" });
     }
   });
 
@@ -1892,6 +2493,682 @@ export async function registerRoutes(
       res.json(userLocks);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch locks" });
+    }
+  });
+
+  // ===== MODEL VERSIONING =====
+  
+  // Finalize cycle and create model version candidate
+  app.post("/api/cycles/:id/finalize", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      // Reset usage counts for next cycle
+      try {
+        const { resetCycleUsageCounts } = await import("./services/rewardsDistributionV2");
+        await resetCycleUsageCounts();
+        logger.info({ cycleId: req.params.id, message: "Reset corpus item usage counts for new cycle" });
+      } catch (error: any) {
+        logger.error({ 
+          requestId: req.requestId, 
+          error: "Failed to reset usage counts (non-blocking)", 
+          details: error.message 
+        });
+      }
+      
+      const { createModelVersionForCycle } = await import("./services/modelVersioning");
+      const cycleId = req.params.id;
+      const notes = req.body.notes as string | undefined;
+
+      const version = await createModelVersionForCycle(cycleId, notes);
+
+      await audit.log("cycle_finalize", {
+        targetType: "cycle",
+        targetId: cycleId,
+        metadata: { versionId: version.id, status: version.status },
+      });
+
+      res.json({
+        success: true,
+        version,
+        message: `Model version created with status: ${version.status}`,
+      });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Cycle finalize error", details: error.message });
+      res.status(500).json({ error: error.message || "Failed to finalize cycle" });
+    }
+  });
+
+  // Get all model versions
+  app.get("/api/model/versions", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    try {
+      const { getAllModelVersions } = await import("./services/modelVersioning");
+      const versions = await getAllModelVersions();
+      res.json({ versions, count: versions.length });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Get model versions error", details: error.message });
+      res.status(500).json({ error: "Failed to fetch model versions" });
+    }
+  });
+
+  // Activate a model version
+  app.post("/api/model/activate/:versionId", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const { activateModelVersion } = await import("./services/modelVersioning");
+      await activateModelVersion(req.params.versionId);
+
+      await audit.log("model_activate", {
+        targetType: "model_version",
+        targetId: req.params.versionId,
+      });
+
+      res.json({ success: true, message: "Model version activated" });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Activate model version error", details: error.message });
+      res.status(400).json({ error: error.message || "Failed to activate model version" });
+    }
+  });
+
+  // Rollback to previous model version
+  app.post("/api/model/rollback", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const { rollbackModelVersion } = await import("./services/modelVersioning");
+      await rollbackModelVersion();
+
+      await audit.log("model_rollback", {
+        targetType: "model_version",
+      });
+
+      res.json({ success: true, message: "Model version rolled back" });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Rollback model version error", details: error.message });
+      res.status(400).json({ error: error.message || "Failed to rollback model version" });
+    }
+  });
+
+  // ===== PROGRESSION REQUIREMENTS =====
+  
+  app.get("/api/progression/requirements", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
+    try {
+      const levelParam = req.query.level;
+      if (!levelParam) {
+        return res.status(400).json({ error: "level query parameter is required" });
+      }
+      
+      const level = parseInt(String(levelParam), 10);
+      if (isNaN(level) || level < 1 || level > 100) {
+        return res.status(400).json({ 
+          error: "Invalid level", 
+          message: "Level must be an integer between 1 and 100" 
+        });
+      }
+      
+      const { getRequirements } = await import("./utils/progression");
+      const requirements = getRequirements(level);
+      
+      res.json({
+        ok: true,
+        requirements,
+      });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Progression requirements error", details: error.message });
+      res.status(500).json({ error: "Failed to fetch progression requirements" });
+    }
+  });
+
+  // ===== RANK-UP TRIALS =====
+  
+  const startRankupSchema = z.object({
+    targetLevel: z.number().int().min(1).max(100),
+    currentLevel: z.number().int().min(1).max(100), // Client-provided current level
+  });
+
+  app.post("/api/rankup/start", requireAuthMiddleware, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const publicKey = (req as any).publicKey;
+      const body = startRankupSchema.parse(req.body);
+
+      // Validate targetLevel === currentLevel + 1
+      if (body.targetLevel !== body.currentLevel + 1) {
+        return res.status(400).json({
+          error: "Invalid target level",
+          message: `Target level must be current level + 1 (current: ${body.currentLevel}, target: ${body.targetLevel})`,
+        });
+      }
+
+      // Check for existing active trial
+      const activeTrial = await storage.getActiveRankupTrial(publicKey);
+      if (activeTrial) {
+        return res.status(409).json({
+          ok: false,
+          error: "trial_already_active",
+          trialId: activeTrial.id,
+          message: "You already have an active rank-up trial",
+        });
+      }
+
+      // Get requirements for target level
+      const { getRequirements } = await import("./utils/progression");
+      const requirements = getRequirements(body.targetLevel);
+
+      // Check wallet hold (HIVE balance)
+      const { getHiveBalance } = await import("./solana");
+      const walletHold = await getHiveBalance(publicKey);
+
+      // Check vault stake (from wallet_balances table)
+      const balance = await storage.getOrCreateWalletBalance(publicKey);
+      const vaultStake = parseFloat(balance.trainingStakeHive);
+      const trialStakeHive = requirements.vaultStake; // Trial stake = required vault stake
+
+      // Validate requirements
+      if (walletHold < requirements.walletHold) {
+        return res.status(403).json({
+          ok: false,
+          error: "insufficient_wallet_hold",
+          required: requirements.walletHold,
+          current: walletHold,
+          message: `Insufficient wallet hold. Required: ${requirements.walletHold} HIVE, Current: ${walletHold} HIVE`,
+        });
+      }
+
+      if (vaultStake < trialStakeHive) {
+        return res.status(403).json({
+          ok: false,
+          error: "insufficient_vault_stake",
+          required: trialStakeHive,
+          current: vaultStake,
+          message: `Insufficient vault stake to escrow. Required: ${trialStakeHive} HIVE, Available: ${vaultStake} HIVE`,
+        });
+      }
+
+      // Escrow trial stake
+      await storage.escrowTrialStake(publicKey, trialStakeHive.toFixed(8));
+
+      // Create trial
+      const trial = await storage.createRankupTrial({
+        walletAddress: publicKey,
+        fromLevel: body.currentLevel,
+        toLevel: body.targetLevel,
+        requiredWalletHold: requirements.walletHold.toFixed(8),
+        requiredVaultStake: requirements.vaultStake.toFixed(8),
+        walletHoldAtStart: walletHold.toFixed(8),
+        vaultStakeAtStart: vaultStake.toFixed(8),
+        questionCount: 20,
+        minAccuracy: "0.8",
+        minAvgDifficulty: "3",
+        trialStakeHive: trialStakeHive.toFixed(8),
+      });
+
+      await audit.log("rankup_trial_started", {
+        targetType: "rankup_trial",
+        targetId: trial.id,
+        metadata: {
+          fromLevel: body.currentLevel,
+          toLevel: body.targetLevel,
+          walletHold,
+          vaultStake,
+        },
+      });
+
+      res.json({
+        ok: true,
+        trial: {
+          id: trial.id,
+          fromLevel: trial.fromLevel,
+          toLevel: trial.toLevel,
+          questionCount: trial.questionCount,
+          minAccuracy: parseFloat(trial.minAccuracy),
+          minAvgDifficulty: parseFloat(trial.minAvgDifficulty),
+          startedAt: trial.startedAt,
+        },
+        requirements: {
+          walletHold: requirements.walletHold,
+          vaultStake: requirements.vaultStake,
+        },
+        trialStakeHive: parseFloat(trial.trialStakeHive),
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: "Invalid request format",
+          details: error.errors,
+        });
+      }
+      logger.error({ requestId: req.requestId, error: "Rank-up start error", details: error.message });
+      res.status(500).json({ error: "Failed to start rank-up trial" });
+    }
+  });
+
+  app.get("/api/rankup/active", requireAuthMiddleware, async (req: Request, res: Response) => {
+    try {
+      const publicKey = (req as any).publicKey;
+      const trial = await storage.getActiveRankupTrial(publicKey);
+
+      if (!trial) {
+        return res.json({
+          ok: true,
+          trial: null,
+        });
+      }
+
+      res.json({
+        ok: true,
+        trial: {
+          id: trial.id,
+          fromLevel: trial.fromLevel,
+          toLevel: trial.toLevel,
+          questionCount: trial.questionCount,
+          minAccuracy: parseFloat(trial.minAccuracy),
+          minAvgDifficulty: parseFloat(trial.minAvgDifficulty),
+          startedAt: trial.startedAt,
+          status: trial.status,
+        },
+      });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Rank-up active error", details: error.message });
+      res.status(500).json({ error: "Failed to fetch active rank-up trial" });
+    }
+  });
+
+  // Get questions for active rank-up trial
+  app.post("/api/rankup/questions", requireAuthMiddleware, async (req: Request, res: Response) => {
+    try {
+      const publicKey = (req as any).publicKey;
+      const trial = await storage.getActiveRankupTrial(publicKey);
+
+      if (!trial) {
+        return res.status(404).json({
+          error: "No active trial",
+          message: "You must start a rank-up trial first",
+        });
+      }
+
+      // Get all tracks to pull questions from
+      const tracks = await storage.getAllTracks();
+      if (tracks.length === 0) {
+        return res.status(500).json({ error: "No tracks available" });
+      }
+
+      // Collect questions from all tracks with difficulty >= minAvgDifficulty
+      const minDifficulty = Math.ceil(parseFloat(trial.minAvgDifficulty));
+      const allQuestions: any[] = [];
+      
+      for (const track of tracks) {
+        const trackQuestions = await storage.getQuestionsByTrack(track.id);
+        const filtered = trackQuestions.filter(q => q.complexity >= minDifficulty);
+        allQuestions.push(...filtered);
+      }
+
+      if (allQuestions.length < trial.questionCount) {
+        return res.status(500).json({
+          error: "Insufficient questions",
+          message: `Not enough questions with difficulty >= ${minDifficulty}. Found ${allQuestions.length}, need ${trial.questionCount}`,
+        });
+      }
+
+      // Random sample
+      const shuffled = allQuestions.sort(() => Math.random() - 0.5);
+      const selected = shuffled.slice(0, trial.questionCount);
+
+      // Exclude numericAnswer (security)
+      const sanitized = selected.map(q => {
+        const { numericAnswer, ...rest } = q;
+        return rest;
+      });
+
+      res.json({
+        ok: true,
+        questions: sanitized,
+        trialId: trial.id,
+      });
+    } catch (error: any) {
+      logger.error({ requestId: req.requestId, error: "Rank-up questions error", details: error.message });
+      res.status(500).json({ error: "Failed to fetch rank-up questions" });
+    }
+  });
+
+  // Complete rank-up trial
+  const completeRankupSchema = z.object({
+    trialId: z.string().uuid(),
+    questionIds: z.array(z.string().uuid()),
+    answers: z.array(z.union([z.number(), z.string()])),
+  });
+
+  app.post("/api/rankup/complete", requireAuthMiddleware, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const publicKey = (req as any).publicKey;
+      const body = completeRankupSchema.parse(req.body);
+
+      // Get trial
+      const trial = await storage.getRankupTrialById(body.trialId);
+      if (!trial) {
+        return res.status(404).json({ error: "Trial not found" });
+      }
+
+      // Validate trial belongs to user and is active
+      if (trial.walletAddress !== publicKey) {
+        return res.status(403).json({ error: "Trial does not belong to you" });
+      }
+
+      if (trial.status !== "active") {
+        return res.status(400).json({
+          error: "Trial not active",
+          message: `Trial status is ${trial.status}, expected active`,
+        });
+      }
+
+      // Validate question/answer counts
+      if (body.questionIds.length !== body.answers.length || body.questionIds.length !== trial.questionCount) {
+        return res.status(400).json({
+          error: "Invalid answer count",
+          message: `Expected ${trial.questionCount} answers, got ${body.answers.length}`,
+        });
+      }
+
+      // Fetch questions and grade
+      const questions = await Promise.all(
+        body.questionIds.map(id => storage.getQuestionById(id))
+      );
+
+      if (questions.some(q => !q)) {
+        return res.status(400).json({ error: "Invalid question ID(s)" });
+      }
+
+      let correctCount = 0;
+      let totalDifficulty = 0;
+      const questionResults: { questionId: string; correct: boolean }[] = [];
+
+      for (let i = 0; i < body.answers.length; i++) {
+        const question = questions[i]!;
+        const userAnswer = body.answers[i];
+        let isCorrect = false;
+
+        totalDifficulty += question.complexity;
+
+        if (question.questionType === "numeric") {
+          const { gradeNumeric } = await import("./utils/numericGrade");
+          const tolerance = question.numericTolerance ? parseFloat(question.numericTolerance) : null;
+          const result = gradeNumeric(
+            typeof userAnswer === "string" ? userAnswer : String(userAnswer),
+            question.numericAnswer || null,
+            tolerance
+          );
+          isCorrect = result.correct;
+        } else {
+          const correctIndex = question.correctIndex;
+          const userIndex = typeof userAnswer === "number" ? userAnswer : parseInt(String(userAnswer), 10);
+          isCorrect = userIndex === correctIndex;
+        }
+
+        if (isCorrect) {
+          correctCount++;
+        }
+
+        questionResults.push({
+          questionId: question.id,
+          correct: isCorrect,
+        });
+      }
+
+      const totalCount = body.answers.length;
+      const accuracy = correctCount / totalCount;
+      const avgDifficulty = totalDifficulty / totalCount;
+
+      // Check pass conditions
+      const minAccuracy = parseFloat(trial.minAccuracy);
+      const minAvgDifficulty = parseFloat(trial.minAvgDifficulty);
+      const passed = accuracy >= minAccuracy && avgDifficulty >= minAvgDifficulty;
+
+      const LOCK_CYCLES = parseInt(process.env.RANKUP_LOCK_CYCLES || "4", 10);
+      const trialStakeAmount = parseFloat(trial.trialStakeHive);
+
+      if (passed) {
+        // PASS: Promote level, reset streak, move escrow to locked
+        const currentLevel = await storage.getWalletLevel(publicKey);
+        if (currentLevel !== trial.fromLevel) {
+          return res.status(400).json({
+            error: "Level mismatch",
+            message: `Current level is ${currentLevel}, but trial is for ${trial.fromLevel} -> ${trial.toLevel}`,
+          });
+        }
+
+        // Update trial
+        await storage.updateRankupTrial(trial.id, {
+          status: "passed",
+          correctCount,
+          totalCount,
+          accuracy: accuracy.toFixed(4),
+          avgDifficulty: avgDifficulty.toFixed(2),
+          completedAt: new Date(),
+        });
+
+        // Promote level
+        await storage.updateWalletLevel(publicKey, trial.toLevel);
+
+        // Reset fail streak
+        await storage.updateRankupFailStreak(publicKey, 0, null);
+
+        // Release escrow to locked stake
+        await storage.releaseEscrowToLocked(publicKey, trialStakeAmount.toFixed(8));
+        
+        const currentCycle = await storage.getCurrentCycle();
+        if (currentCycle) {
+          const userId = publicKey;
+          
+          await storage.createLock({
+            userId,
+            attemptId: trial.id,
+            amount: trialStakeAmount.toFixed(8),
+            originalAmount: trialStakeAmount.toFixed(8),
+            cycleCreated: currentCycle.cycleNumber,
+          });
+        }
+
+        await audit.log("rankup_trial_passed", {
+          targetType: "rankup_trial",
+          targetId: trial.id,
+          metadata: {
+            fromLevel: trial.fromLevel,
+            toLevel: trial.toLevel,
+            accuracy,
+            avgDifficulty,
+            trialStakeHive: trialStakeAmount,
+          },
+        });
+
+        res.json({
+          ok: true,
+          result: "passed",
+          correctCount,
+          totalCount,
+          accuracy,
+          avgDifficulty,
+          newLevel: trial.toLevel,
+          failStreak: 0,
+        });
+      } else {
+        // FAIL: Forfeit escrow, update streak, rollback on 3rd fail
+        const failedReason = accuracy < minAccuracy
+          ? `Accuracy ${(accuracy * 100).toFixed(1)}% below required ${(minAccuracy * 100).toFixed(1)}%`
+          : `Average difficulty ${avgDifficulty.toFixed(2)} below required ${minAvgDifficulty.toFixed(2)}`;
+
+        // Forfeit escrow (100% loss)
+        await storage.forfeitEscrow(publicKey, trialStakeAmount.toFixed(8));
+        
+        // Record in rewards pool ledger and attempt transfer
+        const { recordPoolDeposit, tryTransferToRewardsWallet } = await import("./services/rewardsPool");
+        const currentCycle = await storage.getCurrentCycle();
+        
+        try {
+          const ledgerId = await recordPoolDeposit({
+            source: "rankup_forfeit",
+            amountHive: trialStakeAmount.toFixed(8),
+            walletPubkey: publicKey,
+            cycleId: currentCycle?.id || undefined,
+          });
+          
+          // Attempt transfer (best-effort, don't fail the request if it fails)
+          tryTransferToRewardsWallet(ledgerId).catch((error) => {
+            console.error("Failed to transfer to rewards wallet (non-blocking):", error);
+          });
+        } catch (error: any) {
+          console.error("Failed to record pool deposit (non-blocking):", error);
+          // Still add to legacy rewards pool as fallback
+          await storage.addToRewardsPool(trialStakeAmount.toFixed(8));
+        }
+
+        // Get current fail streak
+        const balance = await storage.getOrCreateWalletBalance(publicKey);
+        let failStreak = balance.rankupFailStreak || 0;
+        const streakTargetLevel = balance.rankupFailStreakTargetLevel;
+        let rollbackApplied = false;
+        let newLevel = balance.level;
+
+        // Update fail streak
+        if (streakTargetLevel !== trial.toLevel) {
+          // New target level, reset streak
+          failStreak = 1;
+          await storage.updateRankupFailStreak(publicKey, 1, trial.toLevel);
+        } else {
+          // Same target level, increment streak
+          failStreak += 1;
+          await storage.updateRankupFailStreak(publicKey, failStreak, trial.toLevel);
+        }
+
+        // Check for rollback on 3rd fail
+        if (failStreak >= 3) {
+          const currentLevel = balance.level;
+          newLevel = Math.max(1, currentLevel - 1);
+          await storage.updateWalletLevel(publicKey, newLevel);
+          await storage.updateRankupFailStreak(publicKey, 0, null);
+          rollbackApplied = true;
+          failStreak = 0; // Reset after rollback
+        }
+
+        // Update trial
+        await storage.updateRankupTrial(trial.id, {
+          status: "failed",
+          correctCount,
+          totalCount,
+          accuracy: accuracy.toFixed(4),
+          avgDifficulty: avgDifficulty.toFixed(2),
+          failedReason,
+          slashedHive: trialStakeAmount.toFixed(8), // Record forfeited amount
+          rollbackApplied,
+          completedAt: new Date(),
+        });
+
+        await audit.log("rankup_trial_failed", {
+          targetType: "rankup_trial",
+          targetId: trial.id,
+          metadata: {
+            fromLevel: trial.fromLevel,
+            toLevel: trial.toLevel,
+            accuracy,
+            avgDifficulty,
+            failedReason,
+            trialStakeHive: trialStakeAmount,
+            failStreak,
+            rollbackApplied,
+            newLevel: rollbackApplied ? newLevel : undefined,
+          },
+        });
+
+        res.json({
+          ok: true,
+          result: "failed",
+          correctCount,
+          totalCount,
+          accuracy,
+          avgDifficulty,
+          failedReason,
+          failStreak,
+          rollbackApplied,
+          newLevel: rollbackApplied ? newLevel : undefined,
+        });
+      }
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: "Invalid request format",
+          details: error.errors,
+        });
+      }
+      logger.error({ requestId: req.requestId, error: "Rank-up complete error", details: error.message });
+      res.status(500).json({ error: "Failed to complete rank-up trial" });
+    }
+  });
+
+  // ===== BULK QUESTION IMPORT =====
+  
+  const bulkImportSchema = z.object({
+    trackId: z.string().uuid(),
+    questions: z.array(z.object({
+      prompt: z.string().max(2000),
+      difficulty: z.number().int().min(1).max(5),
+      questionType: z.enum(["mcq", "numeric"]),
+      numericAnswer: z.string().optional(),
+      numericTolerance: z.number().min(0).nullable().optional(),
+      numericUnit: z.string().nullable().optional(),
+      choices: z.array(z.string()).optional(),
+      correctChoiceIndex: z.number().int().min(0).optional(),
+    })),
+  });
+
+  app.post("/api/questions/bulk-import", requireAuthMiddleware, requireCreator, async (req: Request, res: Response) => {
+    const audit = createAuditHelper(req);
+    try {
+      const body = bulkImportSchema.parse(req.body);
+
+      // Verify track exists
+      const track = await storage.getTrack(body.trackId);
+      if (!track) {
+        return res.status(404).json({ error: "Track not found" });
+      }
+
+      // Validate questions
+      const { validateBulkImport, convertToDbQuestion } = await import("./services/bulkImport");
+      const validationErrors = validateBulkImport(body.questions);
+
+      if (validationErrors.length > 0) {
+        return res.status(400).json({
+          error: "Validation failed",
+          errors: validationErrors,
+        });
+      }
+
+      // Convert and batch insert
+      const dbQuestions = body.questions.map(q => convertToDbQuestion(q, body.trackId));
+      
+      // Use batch insert via storage
+      const results = await storage.createQuestionsBatch(dbQuestions);
+
+      await audit.log("bulk_import_questions", {
+        targetType: "track",
+        targetId: body.trackId,
+        metadata: { 
+          questionCount: results.length,
+          trackName: track.name,
+        },
+      });
+
+      res.json({
+        ok: true,
+        createdCount: results.length,
+        trackId: body.trackId,
+      });
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: "Invalid request format",
+          details: error.errors,
+        });
+      }
+      logger.error({ requestId: req.requestId, error: "Bulk import error", details: error.message });
+      res.status(500).json({ error: "Failed to import questions" });
     }
   });
 

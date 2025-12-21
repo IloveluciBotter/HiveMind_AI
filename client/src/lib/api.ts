@@ -18,13 +18,29 @@ async function fetchApi<T>(
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ error: res.statusText }));
     const requestId = res.headers.get("x-request-id") || errorBody.requestId;
-    const errorMessage = errorBody.message || errorBody.error || "Request failed";
+    let errorMessage = errorBody.message || errorBody.error || "Request failed";
+    
+    // Improve error messages for common status codes
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("retry-after");
+      if (retryAfter) {
+        errorMessage = `Too many requests. Please wait ${retryAfter} seconds and try again.`;
+      } else {
+        errorMessage = "Too many requests. Please slow down and try again.";
+      }
+    }
     
     const error = new Error(errorMessage);
-    captureError(error, {
-      requestId,
-      extra: { endpoint, status: res.status, errorBody },
-    });
+    // Don't log 401 Unauthorized or 429 Rate Limit as errors - they're expected
+    if (res.status !== 401 && res.status !== 429) {
+      captureError(error, {
+        requestId,
+        extra: { endpoint, status: res.status, errorBody },
+      });
+    }
+    (error as any).status = res.status;
+    (error as any).isUnauthorized = res.status === 401;
+    (error as any).isRateLimit = res.status === 429;
     
     throw error;
   }
@@ -229,13 +245,19 @@ export const api = {
       trackId: string;
       difficulty: string;
       content: string;
-      answers: number[];
-      correctAnswers: number[];
+      answers: (number | string)[];
+      questionIds: string[];
       startTime: number;
     }) =>
       fetchApi<{
         id: string;
         status: string;
+        questionResults: Array<{ questionId: string; correct: boolean }>;
+        score: {
+          correctCount: number;
+          total: number;
+          percent: number;
+        };
         autoReview: {
           decision: "approved" | "rejected" | "pending";
           message: string;
@@ -260,6 +282,7 @@ export const api = {
     getStatus: () =>
       fetchApi<{
         stakeHive: number;
+        level?: number;
         vaultAddress: string;
         mintAddress: string;
       }>("/api/stake/status"),
@@ -318,5 +341,98 @@ export const api = {
       fetchApi<{ id: string; cycleNumber: number; isActive: boolean } | null>(
         "/api/cycles/current"
       ),
+  },
+
+  rankup: {
+    getActive: () =>
+      fetchApi<{
+        ok: boolean;
+        trial: {
+          id: string;
+          fromLevel: number;
+          toLevel: number;
+          questionCount: number;
+          minAccuracy: number;
+          minAvgDifficulty: number;
+          startedAt: string;
+          status: string;
+        } | null;
+      }>("/api/rankup/active"),
+
+    start: (data: {
+      currentLevel: number;
+      targetLevel: number;
+    }) =>
+      fetchApi<{
+        ok: boolean;
+        trial: {
+          id: string;
+          fromLevel: number;
+          toLevel: number;
+          questionCount: number;
+          minAccuracy: number;
+          minAvgDifficulty: number;
+          startedAt: string;
+        };
+        requirements: {
+          walletHold: number;
+          vaultStake: number;
+        };
+        trialStakeHive: number;
+      }>("/api/rankup/start", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+
+    getQuestions: () =>
+      fetchApi<{
+        ok: boolean;
+        questions: Array<{
+          id: string;
+          text: string;
+          options: string[];
+          correctIndex: number;
+          complexity: number;
+          questionType?: "mcq" | "numeric";
+          numericTolerance?: number | null;
+          numericUnit?: string | null;
+        }>;
+        trialId: string;
+      }>("/api/rankup/questions", {
+        method: "POST",
+      }),
+
+    complete: (data: {
+      trialId: string;
+      questionIds: string[];
+      answers: (number | string)[];
+    }) =>
+      fetchApi<{
+        ok: boolean;
+        result: "passed" | "failed";
+        correctCount: number;
+        totalCount: number;
+        accuracy: number;
+        avgDifficulty: number;
+        newLevel?: number;
+        failedReason?: string;
+        failStreak?: number;
+        rollbackApplied?: boolean;
+      }>("/api/rankup/complete", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+
+  progression: {
+    getRequirements: (level: number) =>
+      fetchApi<{
+        ok: boolean;
+        requirements: {
+          level: number;
+          walletHold: number;
+          vaultStake: number;
+        };
+      }>(`/api/progression/requirements?level=${level}`),
   },
 };

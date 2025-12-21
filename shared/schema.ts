@@ -37,6 +37,10 @@ export const questions = pgTable("questions", {
   correctIndex: integer("correct_index").notNull(),
   complexity: integer("complexity").notNull(), // 1-5
   isBenchmark: boolean("is_benchmark").notNull().default(false),
+  questionType: varchar("question_type").notNull().default("mcq"), // "mcq" | "numeric"
+  numericAnswer: text("numeric_answer"), // Canonical answer string (e.g., "0.75", "3/4", "-2")
+  numericTolerance: numeric("numeric_tolerance", { precision: 10, scale: 6 }), // Tolerance for numeric comparison (null = exact)
+  numericUnit: text("numeric_unit"), // Optional unit (e.g., "degrees", "radians")
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -63,6 +67,7 @@ export const cycles = pgTable("cycles", {
 export const trainAttempts = pgTable("train_attempts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").references(() => users.id),
+  submitterWalletPubkey: varchar("submitter_wallet_pubkey"), // Wallet address of submitter (for self-review protection)
   trackId: varchar("track_id").references(() => tracks.id),
   difficulty: text("difficulty").notNull(), // "low" | "medium" | "high" | "extreme"
   cost: numeric("cost", { precision: 18, scale: 8 }).notNull(),
@@ -82,6 +87,7 @@ export const reviews = pgTable("reviews", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   attemptId: varchar("attempt_id").notNull().references(() => trainAttempts.id),
   reviewerId: varchar("reviewer_id").notNull().references(() => users.id),
+  reviewerWalletAddress: varchar("reviewer_wallet_address"), // Wallet address of reviewer (for rewards)
   vote: text("vote").notNull(), // "approve" | "reject"
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -153,7 +159,8 @@ export const trainingCorpusItems = pgTable("training_corpus_items", {
   title: text("title"),
   normalizedText: text("normalized_text").notNull(),
   status: text("status").notNull().default("draft"), // draft | approved | rejected
-  createdByWallet: varchar("created_by_wallet"),
+  createdByWallet: varchar("created_by_wallet"), // Legacy field name - kept for compatibility
+  submitterWalletPubkey: varchar("submitter_wallet_pubkey"), // Wallet address of submitter (for self-review protection) - preferred field name
   sourceAttemptId: varchar("source_attempt_id").references(() => trainAttempts.id),
   approvedAt: timestamp("approved_at"),
   embedStatus: text("embed_status").notNull().default("not_embedded"), // not_embedded | queued | embedding | embedded | failed
@@ -163,6 +170,8 @@ export const trainingCorpusItems = pgTable("training_corpus_items", {
   contentHash: text("content_hash"),
   lastEmbeddedHash: text("last_embedded_hash"),
   embedUpdatedAt: timestamp("embed_updated_at"),
+  usageCountCycle: numeric("usage_count_cycle", { precision: 18, scale: 8 }).notNull().default("0"),
+  lastUsedAt: timestamp("last_used_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -191,13 +200,18 @@ export const chatMessages = pgTable("chat_messages", {
 });
 
 // Auth Nonces - for secure wallet authentication
+// nonceHash stores sha256(nonce + IP_HASH_SALT) for security
+// Note: 'nonce' field kept for migration compatibility, new code uses nonceHash
 export const authNonces = pgTable("auth_nonces", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   walletAddress: varchar("wallet_address").notNull(),
-  nonce: varchar("nonce").notNull(),
+  nonce: varchar("nonce"), // Legacy field - kept for migration, use nonceHash instead
+  nonceHash: varchar("nonce_hash").notNull(), // Hashed nonce for security (sha256(nonce + IP_HASH_SALT))
   message: text("message").notNull(),
   expiresAt: timestamp("expires_at").notNull(),
   usedAt: timestamp("used_at"),
+  ipHash: varchar("ip_hash"), // Hashed IP address for replay protection
+  userAgentHash: varchar("user_agent_hash"), // Optional user agent hash
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -216,9 +230,43 @@ export const walletBalances = pgTable("wallet_balances", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   walletAddress: varchar("wallet_address").notNull().unique(),
   trainingStakeHive: numeric("training_stake_hive", { precision: 18, scale: 8 }).notNull().default("0"),
+  trainingStakeEscrowHive: numeric("training_stake_escrow_hive", { precision: 18, scale: 8 }).notNull().default("0"),
+  level: integer("level").notNull().default(1), // Server-side level tracking
+  rankupFailStreak: integer("rankup_fail_streak").notNull().default(0),
+  rankupFailStreakTargetLevel: integer("rankup_fail_streak_target_level"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Rank-Up Trials - level progression trials requiring wallet hold + vault stake
+export const rankupTrials = pgTable("rankup_trials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  walletAddress: varchar("wallet_address").notNull(), // Denormalized for easier queries
+  fromLevel: integer("from_level").notNull(),
+  toLevel: integer("to_level").notNull(),
+  requiredWalletHold: numeric("required_wallet_hold", { precision: 18, scale: 8 }).notNull(),
+  requiredVaultStake: numeric("required_vault_stake", { precision: 18, scale: 8 }).notNull(),
+  walletHoldAtStart: numeric("wallet_hold_at_start", { precision: 18, scale: 8 }).notNull(),
+  vaultStakeAtStart: numeric("vault_stake_at_start", { precision: 18, scale: 8 }).notNull(),
+  status: text("status").notNull().default("active"), // "active" | "passed" | "failed" | "expired"
+  questionCount: integer("question_count").notNull().default(20),
+  minAccuracy: numeric("min_accuracy", { precision: 5, scale: 4 }).notNull().default("0.8"),
+  minAvgDifficulty: numeric("min_avg_difficulty", { precision: 3, scale: 2 }).notNull().default("3"),
+  trialStakeHive: numeric("trial_stake_hive", { precision: 18, scale: 8 }).notNull().default("0"),
+  correctCount: integer("correct_count").notNull().default(0),
+  totalCount: integer("total_count").notNull().default(0),
+  avgDifficulty: numeric("avg_difficulty", { precision: 3, scale: 2 }),
+  accuracy: numeric("accuracy", { precision: 5, scale: 4 }),
+  failedReason: text("failed_reason"),
+  expiresAt: timestamp("expires_at"),
+  cooldownUntil: timestamp("cooldown_until"),
+  slashedHive: numeric("slashed_hive", { precision: 18, scale: 8 }).notNull().default("0"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+});
+
+export type RankupTrial = typeof rankupTrials.$inferSelect;
 
 // Stake Ledger - idempotent deposit/withdrawal tracking
 export const stakeLedger = pgTable("stake_ledger", {
@@ -241,6 +289,58 @@ export const rewardsPool = pgTable("rewards_pool", {
   pendingHive: numeric("pending_hive", { precision: 18, scale: 8 }).notNull().default("0"),
   totalSweptHive: numeric("total_swept_hive", { precision: 18, scale: 8 }).notNull().default("0"),
   rewardsWalletAddress: varchar("rewards_wallet_address"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Rewards Pool Ledger - detailed tracking of deposits and transfers
+export const rewardsPoolLedger = pgTable("rewards_pool_ledger", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cycleId: varchar("cycle_id").references(() => cycles.id),
+  source: text("source").notNull(), // "rankup_forfeit" | "other"
+  walletPubkey: varchar("wallet_pubkey"), // Who forfeited (optional)
+  amountHive: numeric("amount_hive", { precision: 18, scale: 8 }).notNull(),
+  status: text("status").notNull().default("recorded"), // "recorded" | "transferred" | "pending_transfer" | "failed"
+  txSignature: varchar("tx_signature"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Contributor Shares - reward shares earned by contributors per cycle (v1 - legacy)
+export const contributorShares = pgTable("contributor_shares", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cycleId: varchar("cycle_id").notNull().references(() => cycles.id),
+  walletPubkey: varchar("wallet_pubkey").notNull(),
+  source: text("source").notNull(), // "corpus_approved" | "review_reward" | "other"
+  shares: numeric("shares", { precision: 18, scale: 8 }).notNull(),
+  refId: varchar("ref_id"), // e.g., corpusItemId, attemptId
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Contributor Shares V2 - with difficulty, quality, and usage scores
+export const contributorSharesV2 = pgTable("contributor_shares_v2", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cycleId: varchar("cycle_id").notNull().references(() => cycles.id),
+  walletPubkey: varchar("wallet_pubkey").notNull(),
+  source: text("source").notNull(), // "corpus_approved" | "question_approved" | "other"
+  refId: varchar("ref_id"), // corpusItemId or questionId
+  difficultyScore: numeric("difficulty_score", { precision: 5, scale: 4 }).notNull(),
+  qualityScore: numeric("quality_score", { precision: 5, scale: 4 }).notNull(),
+  baseShares: numeric("base_shares", { precision: 18, scale: 8 }).notNull(), // difficultyScore * qualityScore (computed at approval)
+  usageScore: numeric("usage_score", { precision: 5, scale: 4 }), // Optional snapshot at approval (not used for calculation)
+  shares: numeric("shares", { precision: 18, scale: 8 }), // Computed at payout time: baseShares * usageScore (nullable until payout)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// Cycle Payouts - calculated payouts for each contributor per cycle
+export const cyclePayouts = pgTable("cycle_payouts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cycleId: varchar("cycle_id").notNull().references(() => cycles.id),
+  walletPubkey: varchar("wallet_pubkey").notNull(),
+  shares: numeric("shares", { precision: 18, scale: 8 }).notNull(),
+  payoutHive: numeric("payout_hive", { precision: 18, scale: 8 }).notNull(),
+  status: text("status").notNull().default("calculated"), // "calculated" | "paid" | "failed"
+  txSignature: varchar("tx_signature"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -327,6 +427,55 @@ export type HubSubmission = typeof hubSubmissions.$inferSelect;
 export type TrainingPool = typeof trainingPool.$inferSelect;
 export type TrainingCorpusItem = typeof trainingCorpusItems.$inferSelect;
 export type CorpusChunk = typeof corpusChunks.$inferSelect;
+
+// Job Queue - lightweight background job processing
+export const jobs = pgTable("jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  type: varchar("type").notNull(), // e.g., "embed_corpus_item"
+  payload: jsonb("payload").notNull().$type<Record<string, any>>(),
+  status: varchar("status").notNull().default("pending"), // "pending" | "running" | "succeeded" | "failed"
+  attempts: integer("attempts").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(5),
+  runAt: timestamp("run_at").notNull().defaultNow(),
+  lockedAt: timestamp("locked_at"),
+  lockedBy: varchar("locked_by"), // instance ID
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type Job = typeof jobs.$inferSelect;
+export type InsertJob = typeof jobs.$inferInsert;
+
+// Model Versioning - track model versions with benchmarks (new schema)
+// Note: There's an existing modelVersions table above, this is a new implementation
+export const modelVersionsV2 = pgTable("model_versions_v2", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  cycleId: varchar("cycle_id").references(() => cycles.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  status: varchar("status").notNull().default("candidate"), // "active" | "candidate" | "failed" | "rolled_back"
+  corpusHash: varchar("corpus_hash").notNull(), // Deterministic hash of approved corpus items
+  benchmarks: jsonb("benchmarks").$type<{
+    qaAccuracy?: number;
+    refusalRate?: number;
+    hallucinationRate?: number;
+    latencyMs?: number;
+    evalCount?: number;
+  }>(),
+  notes: text("notes"),
+});
+
+// Model State - single-row table tracking active model version
+export const modelState = pgTable("model_state", {
+  id: integer("id").primaryKey().default(1), // Fixed ID, single row
+  activeModelVersionId: varchar("active_model_version_id"),
+  previousModelVersionId: varchar("previous_model_version_id"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type ModelVersionV2 = typeof modelVersionsV2.$inferSelect;
+export type InsertModelVersionV2 = typeof modelVersionsV2.$inferInsert;
+export type ModelState = typeof modelState.$inferSelect;
 
 // Insert schemas
 export const insertTrackSchema = createInsertSchema(tracks).omit({ id: true, createdAt: true });

@@ -42,7 +42,10 @@ function notifyListeners(health: HealthResponse | null) {
 
 export async function fetchHealth(): Promise<HealthResponse | null> {
   try {
-    const res = await fetch("/api/health");
+    const res = await fetch("/api/health", {
+      credentials: "include",
+      signal: AbortSignal.timeout(5000), // 5 second timeout
+    });
     if (!res.ok && res.status !== 503) {
       throw new Error(`HTTP ${res.status}`);
     }
@@ -52,8 +55,12 @@ export async function fetchHealth(): Promise<HealthResponse | null> {
     backoffMs = MIN_POLL_MS;
     notifyListeners(data);
     return data;
-  } catch (error) {
-    console.error("[Health] Fetch failed:", error);
+  } catch (error: any) {
+    // Network errors are expected if server is temporarily unavailable
+    // Only log if it's not a network/timeout error (those are common during dev)
+    if (error?.name !== "NetworkError" && error?.name !== "AbortError" && !error?.message?.includes("fetch")) {
+      console.error("[Health] Fetch failed:", error);
+    }
     backoffMs = Math.min(backoffMs * 1.5, MAX_POLL_MS);
     notifyListeners(null);
     return null;

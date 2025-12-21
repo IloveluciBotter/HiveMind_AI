@@ -6,6 +6,10 @@ interface SeedQuestion {
   options: string[];
   correctIndex: number;
   complexity: number;
+  questionType?: "mcq" | "numeric";
+  numericAnswer?: string;
+  numericTolerance?: number | null;
+  numericUnit?: string;
 }
 
 interface SeedTrack {
@@ -94,6 +98,36 @@ const DEFAULT_TRACKS: SeedTrack[] = [
         options: ["25", "120", "60", "720"],
         correctIndex: 1,
         complexity: 1,
+      },
+      // Numeric question: exact integer answer
+      {
+        text: "What is 15 + 27?",
+        options: [],
+        correctIndex: 0,
+        complexity: 1,
+        questionType: "numeric" as const,
+        numericAnswer: "42",
+        numericTolerance: null,
+      },
+      // Numeric question: fraction answer
+      {
+        text: "What is 3/4 as a decimal?",
+        options: [],
+        correctIndex: 0,
+        complexity: 1,
+        questionType: "numeric" as const,
+        numericAnswer: "0.75",
+        numericTolerance: null,
+      },
+      // Numeric question: tolerance-based decimal
+      {
+        text: "What is 1/3 as a decimal (rounded)?",
+        options: [],
+        correctIndex: 0,
+        complexity: 1,
+        questionType: "numeric" as const,
+        numericAnswer: "0.3333",
+        numericTolerance: 0.01,
       },
       {
         text: "What is the integral of 2x dx?",
@@ -216,6 +250,11 @@ const DEFAULT_TRACKS: SeedTrack[] = [
       },
     ],
   },
+  {
+    name: "Complex Math",
+    description: "Advanced mathematical problems requiring numeric solutions",
+    questions: [], // Will be populated via bulk import
+  },
 ];
 
 export async function seedDefaultTracks(): Promise<void> {
@@ -243,6 +282,10 @@ export async function seedDefaultTracks(): Promise<void> {
           options: questionData.options,
           correctIndex: questionData.correctIndex,
           complexity: questionData.complexity,
+          questionType: questionData.questionType,
+          numericAnswer: questionData.numericAnswer,
+          numericTolerance: questionData.numericTolerance,
+          numericUnit: questionData.numericUnit,
         });
       }
       

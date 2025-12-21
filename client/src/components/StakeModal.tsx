@@ -72,31 +72,90 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
         }
       }
 
-      const { Connection, PublicKey, Transaction } = await import("@solana/web3.js");
-      const { 
-        getAssociatedTokenAddress, 
-        createTransferInstruction, 
+      const { PublicKey, Transaction } = await import("@solana/web3.js");
+      const splTokenModule = await import("@solana/spl-token") as any;
+      const {
+        getAssociatedTokenAddress,
+        createTransferInstruction,
         createAssociatedTokenAccountInstruction,
         getAccount,
         getMint,
         TOKEN_PROGRAM_ID,
+        TOKEN_2022_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
-      } = await import("@solana/spl-token");
+      } = splTokenModule;
 
-      const connection = new Connection(
-        import.meta.env.VITE_SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com",
-        "confirmed"
-      );
+      // Use secure RPC proxy (never exposes API keys to client)
+      const { createSolanaConnection } = await import("@/lib/solanaConnection");
+      const connection = createSolanaConnection();
 
       const fromPubkey = new PublicKey(wallet.publicKey.toString());
       const toPubkey = new PublicKey(vaultAddress);
-      const mintPubkey = new PublicKey(mintAddress);
+      
+      // Validate mint address
+      let mintPubkey;
+      try {
+        mintPubkey = new PublicKey(mintAddress);
+      } catch (error: any) {
+        throw new Error(`Invalid mint address: ${mintAddress}. Please check your configuration.`);
+      }
 
-      const mintInfo = await getMint(connection, mintPubkey);
-      const decimals = mintInfo.decimals;
+      let mintInfo;
+      let decimals = 6; // Default to 6 decimals for HIVE token (Token-2022 with extensions)
+      let tokenProgramId = TOKEN_PROGRAM_ID; // Default to regular Token Program
+      
+      // Check if it's Token-2022 by checking account owner
+      let accountInfo = null;
+      try {
+        accountInfo = await connection.getAccountInfo(mintPubkey);
+      } catch (error: any) {
+        console.warn(`[StakeModal] Failed to get account info:`, error.message);
+        // Continue with default Token-2022 assumption
+      }
 
-      const fromATA = await getAssociatedTokenAddress(mintPubkey, fromPubkey);
-      const toATA = await getAssociatedTokenAddress(mintPubkey, toPubkey, true);
+      if (accountInfo) {
+        const TOKEN_2022_PROGRAM_ID_STR = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+        if (accountInfo.owner.toBase58() === TOKEN_2022_PROGRAM_ID_STR) {
+          tokenProgramId = TOKEN_2022_PROGRAM_ID;
+          console.log("Detected Token-2022 mint, using TOKEN_2022_PROGRAM_ID");
+        }
+      } else {
+        // If we can't check, default to Token-2022 (HIVE token is Token-2022)
+        console.warn("Could not fetch account info, defaulting to Token-2022 for HIVE token");
+        tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      }
+
+      // Use the proxy connection for all RPC calls (read-only operations)
+      const connectionToUse = connection;
+      
+      // Try to get mint info using proxy connection
+      try {
+        mintInfo = await getMint(connectionToUse, mintPubkey, undefined, tokenProgramId);
+        decimals = mintInfo.decimals;
+      } catch (error: any) {
+        // If getMint fails, check if account exists and use default decimals
+        if (error.message?.includes("TokenInvalidAccountOwnerError") || error.message?.includes("InvalidAccountOwner") || error.name === "TokenInvalidAccountOwnerError") {
+          console.warn("TokenInvalidAccountOwnerError, verifying account exists");
+          try {
+            const verifyAccountInfo = await connectionToUse.getAccountInfo(mintPubkey);
+            if (!verifyAccountInfo) {
+              throw new Error(`Mint account ${mintAddress} does not exist on Solana. Please verify the HIVE token mint address.`);
+            }
+            // Account exists, use default decimals and continue (HIVE token has 6 decimals)
+            console.warn(`Account exists but getMint failed, using default 6 decimals for ${mintAddress}`);
+            decimals = 6;
+          } catch (verifyError: any) {
+            throw new Error(`Invalid mint account: ${mintAddress}. ${verifyError.message || "Please verify the HIVE_MINT configuration."}`);
+          }
+        } else {
+          // For other errors, use default decimals (HIVE token has 6 decimals)
+          console.warn(`getMint failed, using default 6 decimals for ${mintAddress}. Error:`, error.message);
+          decimals = 6;
+        }
+      }
+
+      const fromATA = await getAssociatedTokenAddress(mintPubkey, fromPubkey, false, tokenProgramId);
+      const toATA = await getAssociatedTokenAddress(mintPubkey, toPubkey, true, tokenProgramId);
 
       const amountLamports = BigInt(Math.floor(depositAmount * Math.pow(10, decimals)));
 
@@ -104,9 +163,10 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
       
       let toATAExists = false;
       try {
-        await getAccount(connection, toATA);
+        await getAccount(connectionToUse, toATA, undefined, tokenProgramId);
         toATAExists = true;
-      } catch {
+      } catch (error: any) {
+        // Account doesn't exist, which is fine - we'll create it
         toATAExists = false;
       }
 
@@ -117,7 +177,7 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
             toATA,
             toPubkey,
             mintPubkey,
-            TOKEN_PROGRAM_ID,
+            tokenProgramId,
             ASSOCIATED_TOKEN_PROGRAM_ID
           )
         );
@@ -130,34 +190,55 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
           fromPubkey,
           amountLamports,
           [],
-          TOKEN_PROGRAM_ID
+          tokenProgramId
         )
       );
 
-      const { blockhash } = await connection.getLatestBlockhash();
+      const blockhashResult = await connectionToUse.getLatestBlockhash();
+      const blockhash = blockhashResult.blockhash;
+      
       transaction.recentBlockhash = blockhash;
       transaction.feePayer = fromPubkey;
 
+      // Sign transaction
       const signedTx = await wallet.signTransaction(transaction);
-      const signature = await connection.sendRawTransaction(signedTx.serialize());
       
-      await connection.confirmTransaction(signature, "confirmed");
+      // Send transaction using Phantom's RPC (not our proxy - proxy only allows reads)
+      // Phantom wallet uses its own RPC endpoint for sending transactions
+      const sendResult = await wallet.signAndSendTransaction(transaction);
+      const signature = sendResult.signature; // Extract signature string from result object
+      
+      // Confirm transaction using our proxy (confirmTransaction is a read operation - just polls)
+      await connectionToUse.confirmTransaction(signature, "confirmed");
       
       setTxSignature(signature);
       setStep("confirming");
 
-      const result = await api.stake.confirmDeposit(signature, depositAmount);
+      const confirmResult = await api.stake.confirmDeposit(signature, depositAmount);
       
-      if (result.success) {
-        setNewBalance(result.stakeAfter);
-        onStakeUpdated(result.stakeAfter);
+      if (confirmResult.success) {
+        setNewBalance(confirmResult.stakeAfter);
+        onStakeUpdated(confirmResult.stakeAfter);
         setStep("success");
       } else {
         throw new Error("Failed to confirm deposit");
       }
     } catch (err: unknown) {
       console.error("Deposit error:", err);
-      const errorMessage = err instanceof Error ? err.message : "Transaction failed";
+      let errorMessage = "Transaction failed";
+      if (err instanceof Error) {
+        errorMessage = err.message;
+        // Provide more helpful error messages
+        if (err.message.includes("User rejected")) {
+          errorMessage = "Transaction was cancelled. Please try again.";
+        } else if (err.message.includes("insufficient funds") || err.message.includes("Insufficient")) {
+          errorMessage = "Insufficient balance. Please check your HIVE token balance.";
+        } else if (err.message.includes("403") || err.message.includes("Access forbidden")) {
+          errorMessage = "RPC access denied. Please try again or contact support.";
+        } else if (err.message.includes("network") || err.message.includes("Network")) {
+          errorMessage = "Network error. Please check your connection and try again.";
+        }
+      }
       setError(errorMessage);
       setStep("error");
     }

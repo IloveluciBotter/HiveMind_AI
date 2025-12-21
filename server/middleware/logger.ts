@@ -2,21 +2,23 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import { Request, Response } from "express";
 import { createHash } from "crypto";
+import { env } from "../env";
 
 export const logger = pino({
-  level: process.env.LOG_LEVEL || "info",
+  level: env.LOG_LEVEL,
   formatters: {
     level: (label) => ({ level: label }),
   },
   base: {
     service: "hivemind",
-    env: process.env.NODE_ENV || "development",
+    env: env.NODE_ENV,
   },
 });
 
 export function hashIp(ip: string | undefined): string | undefined {
   if (!ip) return undefined;
-  return createHash("sha256").update(ip + (process.env.IP_HASH_SALT || "hivemind")).digest("hex").slice(0, 16);
+  const salt = env.IP_HASH_SALT || "hivemind-dev-fallback";
+  return createHash("sha256").update(ip + salt).digest("hex").slice(0, 16);
 }
 
 function getClientIp(req: Request): string | undefined {

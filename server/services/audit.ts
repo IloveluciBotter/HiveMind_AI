@@ -28,7 +28,15 @@ export type AuditAction =
   | "auto_review_pending"
   | "answer_events_logged"
   | "rollup_completed"
-  | "retention_cleanup";
+  | "retention_cleanup"
+  | "job_retry"
+  | "cycle_finalize"
+  | "model_activate"
+  | "model_rollback"
+  | "rankup_trial_started"
+  | "rankup_trial_passed"
+  | "rankup_trial_failed"
+  | "bulk_import_questions";
 
 export type AuditTargetType =
   | "corpus_item"
@@ -43,7 +51,9 @@ export type AuditTargetType =
   | "rewards_pool"
   | "track"
   | "answer_event"
-  | "aggregate";
+  | "aggregate"
+  | "job"
+  | "rankup_trial";
 
 export interface AuditLogEntry {
   action: AuditAction;

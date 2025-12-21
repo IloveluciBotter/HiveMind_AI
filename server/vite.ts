@@ -29,6 +29,16 @@ export async function setupVite(server: Server, app: Express) {
     appType: "custom",
   });
 
+  // Handle missing source map requests (often from browser extensions)
+  app.use((req, res, next) => {
+    if (req.path.endsWith('.map') && !req.path.startsWith('/@')) {
+      // Return empty JSON for missing source maps to prevent console errors
+      res.status(200).set({ 'Content-Type': 'application/json' }).end('{}');
+      return;
+    }
+    next();
+  });
+
   app.use(vite.middlewares);
 
   app.use("*", async (req, res, next) => {

@@ -17,6 +17,8 @@ $env:DATABASE_URL="postgres://USER:PASSWORD@localhost:5432/hivemind"
 ```
 DATABASE_URL=postgres://USER:PASSWORD@localhost:5432/hivemind
 PORT=5000
+LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
+LMSTUDIO_MODEL=mistralai/mistral-7b-instruct-v0.3
 ```
 
 **Replace:**
@@ -25,7 +27,26 @@ PORT=5000
 - `localhost:5432` - Your database host and port
 - `hivemind` - Your database name
 
-### 2. Run Database Migrations
+### 2. Set LM Studio Configuration
+
+**PowerShell:**
+```powershell
+$env:LMSTUDIO_BASE_URL="http://127.0.0.1:1234/v1"
+$env:LMSTUDIO_MODEL="mistralai/mistral-7b-instruct-v0.3"
+```
+
+**Or add to `.env` file:**
+```
+LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
+LMSTUDIO_MODEL=mistralai/mistral-7b-instruct-v0.3
+```
+
+**Requirements:**
+- LM Studio must be running locally on `127.0.0.1:1234`
+- The model specified in `LMSTUDIO_MODEL` must be loaded in LM Studio
+- The `/v1` endpoint must be enabled in LM Studio settings
+
+### 3. Run Database Migrations
 
 ```bash
 npm run db:push
@@ -38,7 +59,7 @@ This will create all the HiveMind tables in your database.
 ✓ Migration completed successfully
 ```
 
-### 3. Seed Initial Data
+### 4. Seed Initial Data
 
 ```bash
 npm run seed
@@ -54,7 +75,7 @@ Created 10 benchmark questions
 Seed completed!
 ```
 
-### 4. Start Development Server
+### 5. Start Development Server
 
 ```bash
 npm run dev
@@ -65,7 +86,7 @@ npm run dev
 [timestamp] [express] serving on port 5000
 ```
 
-### 5. Access Admin UI
+### 6. Access Admin UI
 
 Open in your browser:
 ```
@@ -82,6 +103,13 @@ You should see the HiveMind Admin Dashboard with 4 tabs:
 
 ### Error: "DATABASE_URL environment variable is required"
 - **Solution**: Set DATABASE_URL before running commands (see step 1)
+
+### Error: "LM Studio not configured"
+- **Solution**: 
+  - Ensure LM Studio is running locally on `127.0.0.1:1234`
+  - Set `LMSTUDIO_BASE_URL` and `LMSTUDIO_MODEL` environment variables
+  - Verify the model is loaded in LM Studio
+  - Check that LM Studio's API server is enabled (Settings → Server → Enable API Server)
 
 ### Error: "relation does not exist"
 - **Solution**: Run `npm run db:push` first to create tables

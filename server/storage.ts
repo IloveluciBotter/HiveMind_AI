@@ -17,6 +17,7 @@ import {
   type AuthNonce,
   type Session,
   type WalletBalance,
+  type RankupTrial,
   type StakeLedgerEntry,
   type RewardsPool,
   type AnswerEvent,
@@ -48,6 +49,7 @@ import {
   questionAggregates,
   trackAggregates,
   cycleAggregates,
+  rankupTrials,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, gte, lte, isNull, gt } from "drizzle-orm";
@@ -69,6 +71,7 @@ export interface IStorage {
   // Question operations
   getQuestionsByTrack(trackId: string): Promise<Question[]>;
   getBenchmarkQuestions(): Promise<Question[]>;
+  getQuestionById(id: string): Promise<Question | undefined>;
   createQuestion(data: {
     trackId?: string;
     text: string;
@@ -76,7 +79,23 @@ export interface IStorage {
     correctIndex: number;
     complexity: number;
     isBenchmark?: boolean;
+    questionType?: "mcq" | "numeric";
+    numericAnswer?: string;
+    numericTolerance?: number;
+    numericUnit?: string;
   }): Promise<Question>;
+  createQuestionsBatch(data: Array<{
+    trackId?: string;
+    text: string;
+    options: string[];
+    correctIndex: number;
+    complexity: number;
+    isBenchmark?: boolean;
+    questionType?: "mcq" | "numeric";
+    numericAnswer?: string | null;
+    numericTolerance?: number | null;
+    numericUnit?: string | null;
+  }>): Promise<Question[]>;
 
   // Cycle operations
   getCurrentCycle(): Promise<Cycle | undefined>;
@@ -100,6 +119,7 @@ export interface IStorage {
     cycleId: string;
     scorePct?: string;
     attemptDurationSec?: number;
+    submitterWalletPubkey?: string;
   }): Promise<TrainAttempt>;
   getPendingAttempts(): Promise<TrainAttempt[]>;
   getAttemptById(id: string): Promise<TrainAttempt | undefined>;
@@ -114,7 +134,7 @@ export interface IStorage {
   getApprovedAttemptsForCycles(cycleNumbers: number[]): Promise<TrainAttempt[]>;
 
   // Review operations
-  createReview(attemptId: string, reviewerId: string, vote: "approve" | "reject"): Promise<Review>;
+  createReview(attemptId: string, reviewerId: string, vote: "approve" | "reject", reviewerWalletAddress?: string): Promise<Review>;
   getReviewsForAttempt(attemptId: string): Promise<Review[]>;
   hasReviewerVoted(attemptId: string, reviewerId: string): Promise<boolean>;
   checkReviewConsensus(attemptId: string, difficulty: string): Promise<{ met: boolean; approveCount: number; rejectCount: number }>;
@@ -163,10 +183,11 @@ export interface IStorage {
   getAllCorpusItems(): Promise<TrainingCorpusItem[]>;
   getCorpusItemsByTrack(trackId: string): Promise<TrainingCorpusItem[]>;
   addCorpusItem(data: {
-    trackId: string;
+    trackId?: string;
     cycleId: string;
     normalizedText: string;
     sourceAttemptId?: string;
+    submitterWalletPubkey?: string;
   }): Promise<TrainingCorpusItem>;
   updateCorpusItem(id: string, normalizedText?: string, trackId?: string): Promise<TrainingCorpusItem | undefined>;
   deleteCorpusItem(id: string): Promise<void>;
@@ -186,10 +207,11 @@ export interface IStorage {
   getChatHistory(walletAddress: string, limit?: number): Promise<ChatMessage[]>;
 
   // Auth nonce operations
-  createNonce(walletAddress: string, nonce: string, message: string, expiresAt: Date): Promise<AuthNonce>;
-  getUnusedNonce(walletAddress: string, nonce: string): Promise<AuthNonce | undefined>;
+  createNonce(walletAddress: string, nonceHash: string, message: string, expiresAt: Date, ipHash?: string, userAgentHash?: string): Promise<AuthNonce>;
+  getUnusedNonce(walletAddress: string, nonceHash: string): Promise<AuthNonce | undefined>;
   markNonceUsed(id: string): Promise<void>;
-  consumeNonceAtomic(walletAddress: string, nonce: string): Promise<AuthNonce | undefined>;
+  consumeNonceAtomic(walletAddress: string, nonceHash: string, ipHash?: string): Promise<AuthNonce | undefined>;
+  invalidateWalletNonces(walletAddress: string): Promise<void>;
   cleanupExpiredNonces(): Promise<void>;
 
   // Session operations
@@ -229,6 +251,36 @@ export interface IStorage {
   getRewardsPool(): Promise<RewardsPool>;
   addToRewardsPool(amount: string): Promise<void>;
   sweepRewardsPool(toWallet: string): Promise<string>;
+
+  // Rank-up trial operations
+  createRankupTrial(data: {
+    userId?: string;
+    walletAddress: string;
+    fromLevel: number;
+    toLevel: number;
+    requiredWalletHold: string;
+    requiredVaultStake: string;
+    walletHoldAtStart: string;
+    vaultStakeAtStart: string;
+    questionCount?: number;
+    minAccuracy?: string;
+    minAvgDifficulty?: string;
+    trialStakeHive?: string;
+  }): Promise<RankupTrial>;
+  getActiveRankupTrial(walletAddress: string): Promise<RankupTrial | undefined>;
+  getRankupTrialById(id: string): Promise<RankupTrial | undefined>;
+  getLastFailedRankupTrial(walletAddress: string): Promise<RankupTrial | undefined>;
+  updateRankupTrial(id: string, data: {
+    status?: "active" | "passed" | "failed" | "expired";
+    correctCount?: number;
+    totalCount?: number;
+    avgDifficulty?: string;
+    accuracy?: string;
+    failedReason?: string;
+    cooldownUntil?: Date;
+    slashedHive?: string;
+    completedAt?: Date;
+  }): Promise<RankupTrial>;
 }
 
 export class DbStorage implements IStorage {
@@ -297,6 +349,11 @@ export class DbStorage implements IStorage {
     return await db.select().from(questions).where(eq(questions.isBenchmark, true));
   }
 
+  async getQuestionById(id: string): Promise<Question | undefined> {
+    const result = await db.select().from(questions).where(eq(questions.id, id)).limit(1);
+    return result[0];
+  }
+
   async createQuestion(data: {
     trackId?: string;
     text: string;
@@ -304,9 +361,39 @@ export class DbStorage implements IStorage {
     correctIndex: number;
     complexity: number;
     isBenchmark?: boolean;
+    questionType?: "mcq" | "numeric";
+    numericAnswer?: string;
+    numericTolerance?: number;
+    numericUnit?: string;
   }): Promise<Question> {
-    const result = await db.insert(questions).values(data).returning();
+    const result = await db.insert(questions).values({
+      ...data,
+      questionType: data.questionType || "mcq",
+      numericTolerance: data.numericTolerance !== undefined ? data.numericTolerance.toString() : null,
+    }).returning();
     return result[0];
+  }
+
+  async createQuestionsBatch(data: Array<{
+    trackId?: string;
+    text: string;
+    options: string[];
+    correctIndex: number;
+    complexity: number;
+    isBenchmark?: boolean;
+    questionType?: "mcq" | "numeric";
+    numericAnswer?: string | null;
+    numericTolerance?: number | null;
+    numericUnit?: string | null;
+  }>): Promise<Question[]> {
+    const result = await db.insert(questions).values(
+      data.map(q => ({
+        ...q,
+        questionType: q.questionType || "mcq",
+        numericTolerance: q.numericTolerance !== undefined && q.numericTolerance !== null ? q.numericTolerance.toString() : null,
+      }))
+    ).returning();
+    return result;
   }
 
   // Cycle operations
@@ -354,13 +441,11 @@ export class DbStorage implements IStorage {
 
   // Phrase operations
   async getPhrasesByMentions(minMentions: number, cycleId?: number): Promise<Phrase[]> {
-    let query = db.select().from(phrases);
     if (cycleId) {
-      query = query.where(and(gte(phrases.globalMentions, minMentions), eq(phrases.lastCycleCounted, cycleId)));
+      return await db.select().from(phrases).where(and(gte(phrases.globalMentions, minMentions), eq(phrases.lastCycleCounted, cycleId)));
     } else {
-      query = query.where(gte(phrases.globalMentions, minMentions));
+      return await db.select().from(phrases).where(gte(phrases.globalMentions, minMentions));
     }
-    return await query;
   }
 
   async incrementPhraseMention(normalized: string, redacted: string, trackId?: string): Promise<Phrase> {
@@ -410,6 +495,7 @@ export class DbStorage implements IStorage {
     cycleId: string;
     scorePct?: string;
     attemptDurationSec?: number;
+    submitterWalletPubkey?: string;
   }): Promise<TrainAttempt> {
     const result = await db.insert(trainAttempts).values({ ...data, status: "pending" }).returning();
     return result[0];
@@ -471,8 +557,13 @@ export class DbStorage implements IStorage {
   }
 
   // Review operations
-  async createReview(attemptId: string, reviewerId: string, vote: "approve" | "reject"): Promise<Review> {
-    const result = await db.insert(reviews).values({ attemptId, reviewerId, vote }).returning();
+  async createReview(attemptId: string, reviewerId: string, vote: "approve" | "reject", reviewerWalletAddress?: string): Promise<Review> {
+    const result = await db.insert(reviews).values({ 
+      attemptId, 
+      reviewerId, 
+      vote,
+      reviewerWalletAddress: reviewerWalletAddress || null,
+    }).returning();
     return result[0];
   }
 
@@ -527,11 +618,11 @@ export class DbStorage implements IStorage {
   }
 
   async getActiveLocks(userId?: string): Promise<Lock[]> {
-    let query = db.select().from(locks).where(sql`${locks.unlockedAt} IS NULL`);
     if (userId) {
-      query = query.where(and(sql`${locks.unlockedAt} IS NULL`, eq(locks.userId, userId)));
+      return await db.select().from(locks).where(and(sql`${locks.unlockedAt} IS NULL`, eq(locks.userId, userId)));
+    } else {
+      return await db.select().from(locks).where(sql`${locks.unlockedAt} IS NULL`);
     }
-    return await query;
   }
 
   async unlockLocks(cycleNumber: number): Promise<void> {
@@ -694,6 +785,8 @@ export class DbStorage implements IStorage {
       cycleId: data.cycleId,
       normalizedText: data.normalizedText,
       sourceAttemptId: data.sourceAttemptId,
+      createdByWallet: data.submitterWalletPubkey || null, // Legacy field - keep for compatibility
+      submitterWalletPubkey: data.submitterWalletPubkey || null,
     }).returning();
     return result[0];
   }
@@ -725,7 +818,8 @@ export class DbStorage implements IStorage {
     const byTrack: Record<string, number> = {};
     
     for (const item of allItems) {
-      byTrack[item.trackId] = (byTrack[item.trackId] || 0) + 1;
+      const trackId = item.trackId || "uncategorized";
+      byTrack[trackId] = (byTrack[trackId] || 0) + 1;
     }
     
     return {
@@ -795,17 +889,26 @@ export class DbStorage implements IStorage {
   }
 
   // Auth nonce operations
-  async createNonce(walletAddress: string, nonce: string, message: string, expiresAt: Date): Promise<AuthNonce> {
+  async createNonce(
+    walletAddress: string,
+    nonceHash: string,
+    message: string,
+    expiresAt: Date,
+    ipHash?: string,
+    userAgentHash?: string
+  ): Promise<AuthNonce> {
     const result = await db.insert(authNonces).values({
       walletAddress,
-      nonce,
+      nonceHash,
       message,
       expiresAt,
+      ipHash,
+      userAgentHash,
     }).returning();
     return result[0];
   }
 
-  async getUnusedNonce(walletAddress: string, nonce: string): Promise<AuthNonce | undefined> {
+  async getUnusedNonce(walletAddress: string, nonceHash: string): Promise<AuthNonce | undefined> {
     const now = new Date();
     const result = await db
       .select()
@@ -813,7 +916,7 @@ export class DbStorage implements IStorage {
       .where(
         and(
           eq(authNonces.walletAddress, walletAddress),
-          eq(authNonces.nonce, nonce),
+          eq(authNonces.nonceHash, nonceHash),
           isNull(authNonces.usedAt),
           gt(authNonces.expiresAt, now)
         )
@@ -826,21 +929,38 @@ export class DbStorage implements IStorage {
     await db.update(authNonces).set({ usedAt: new Date() }).where(eq(authNonces.id, id));
   }
 
-  async consumeNonceAtomic(walletAddress: string, nonce: string): Promise<AuthNonce | undefined> {
+  async consumeNonceAtomic(walletAddress: string, nonceHash: string, ipHash?: string): Promise<AuthNonce | undefined> {
     const now = new Date();
+    // Atomically mark nonce as used if it's valid (unused and unexpired)
     const result = await db
       .update(authNonces)
       .set({ usedAt: now })
       .where(
         and(
           eq(authNonces.walletAddress, walletAddress),
-          eq(authNonces.nonce, nonce),
+          eq(authNonces.nonceHash, nonceHash),
           isNull(authNonces.usedAt),
           gt(authNonces.expiresAt, now)
         )
       )
       .returning();
     return result[0];
+  }
+
+  async invalidateWalletNonces(walletAddress: string): Promise<void> {
+    // Mark all unexpired, unused nonces for this wallet as used
+    // This ensures only one active nonce per wallet at a time
+    const now = new Date();
+    await db
+      .update(authNonces)
+      .set({ usedAt: now })
+      .where(
+        and(
+          eq(authNonces.walletAddress, walletAddress),
+          isNull(authNonces.usedAt),
+          gt(authNonces.expiresAt, now)
+        )
+      );
   }
 
   async cleanupExpiredNonces(): Promise<void> {
@@ -1003,6 +1123,229 @@ export class DbStorage implements IStorage {
       .update(rewardsPool)
       .set({ pendingHive: newPending, updatedAt: new Date() })
       .where(eq(rewardsPool.id, pool.id));
+  }
+
+  // Rank-up trial operations
+  async createRankupTrial(data: {
+    userId?: string;
+    walletAddress: string;
+    fromLevel: number;
+    toLevel: number;
+    requiredWalletHold: string;
+    requiredVaultStake: string;
+    walletHoldAtStart: string;
+    vaultStakeAtStart: string;
+    questionCount?: number;
+    minAccuracy?: string;
+    minAvgDifficulty?: string;
+    trialStakeHive?: string;
+  }): Promise<RankupTrial> {
+    const result = await db.insert(rankupTrials).values({
+      userId: data.userId,
+      walletAddress: data.walletAddress,
+      fromLevel: data.fromLevel,
+      toLevel: data.toLevel,
+      requiredWalletHold: data.requiredWalletHold,
+      requiredVaultStake: data.requiredVaultStake,
+      walletHoldAtStart: data.walletHoldAtStart,
+      vaultStakeAtStart: data.vaultStakeAtStart,
+      questionCount: data.questionCount ?? 20,
+      minAccuracy: data.minAccuracy ?? "0.8",
+      trialStakeHive: data.trialStakeHive ?? "0",
+      minAvgDifficulty: data.minAvgDifficulty ?? "3",
+      status: "active",
+    }).returning();
+    return result[0];
+  }
+
+  async getActiveRankupTrial(walletAddress: string): Promise<RankupTrial | undefined> {
+    const result = await db
+      .select()
+      .from(rankupTrials)
+      .where(
+        and(
+          eq(rankupTrials.walletAddress, walletAddress),
+          eq(rankupTrials.status, "active")
+        )
+      )
+      .limit(1);
+    return result[0];
+  }
+
+  async getRankupTrialById(id: string): Promise<RankupTrial | undefined> {
+    const result = await db
+      .select()
+      .from(rankupTrials)
+      .where(eq(rankupTrials.id, id))
+      .limit(1);
+    return result[0];
+  }
+
+  async getLastFailedRankupTrial(walletAddress: string): Promise<RankupTrial | undefined> {
+    const result = await db
+      .select()
+      .from(rankupTrials)
+      .where(
+        and(
+          eq(rankupTrials.walletAddress, walletAddress),
+          eq(rankupTrials.status, "failed")
+        )
+      )
+      .orderBy(desc(rankupTrials.completedAt))
+      .limit(1);
+    return result[0];
+  }
+
+  async updateRankupTrial(id: string, data: {
+    status?: "active" | "passed" | "failed" | "expired";
+    correctCount?: number;
+    totalCount?: number;
+    avgDifficulty?: string;
+    accuracy?: string;
+    failedReason?: string;
+    cooldownUntil?: Date;
+    slashedHive?: string;
+    rollbackApplied?: boolean;
+    completedAt?: Date;
+  }): Promise<RankupTrial> {
+    const updates: any = {};
+    if (data.status !== undefined) updates.status = data.status;
+    if (data.correctCount !== undefined) updates.correctCount = data.correctCount;
+    if (data.totalCount !== undefined) updates.totalCount = data.totalCount;
+    if (data.avgDifficulty !== undefined) updates.avgDifficulty = data.avgDifficulty;
+    if (data.accuracy !== undefined) updates.accuracy = data.accuracy;
+    if (data.failedReason !== undefined) updates.failedReason = data.failedReason;
+    if (data.cooldownUntil !== undefined) updates.cooldownUntil = data.cooldownUntil;
+    if (data.slashedHive !== undefined) updates.slashedHive = data.slashedHive;
+    if (data.rollbackApplied !== undefined) updates.rollbackApplied = data.rollbackApplied;
+    if (data.completedAt !== undefined) updates.completedAt = data.completedAt;
+
+    const result = await db
+      .update(rankupTrials)
+      .set(updates)
+      .where(eq(rankupTrials.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async updateWalletLevel(walletAddress: string, newLevel: number): Promise<WalletBalance> {
+    await db
+      .update(walletBalances)
+      .set({ level: newLevel, updatedAt: new Date() })
+      .where(eq(walletBalances.walletAddress, walletAddress))
+      .returning();
+    const updated = await this.getWalletBalance(walletAddress);
+    if (!updated) {
+      throw new Error("Failed to update wallet level");
+    }
+    return updated;
+  }
+
+  async getWalletLevel(walletAddress: string): Promise<number> {
+    const balance = await this.getOrCreateWalletBalance(walletAddress);
+    return balance.level;
+  }
+
+  async escrowTrialStake(walletAddress: string, amount: string): Promise<WalletBalance> {
+    const balance = await this.getOrCreateWalletBalance(walletAddress);
+    const currentStake = parseFloat(balance.trainingStakeHive);
+    const escrowAmount = parseFloat(amount);
+    const currentEscrow = parseFloat(balance.trainingStakeEscrowHive || "0");
+    
+    if (currentStake < escrowAmount) {
+      throw new Error(`Insufficient stake to escrow. Available: ${currentStake}, Required: ${escrowAmount}`);
+    }
+    
+    const newStake = (currentStake - escrowAmount).toFixed(8);
+    const newEscrow = (currentEscrow + escrowAmount).toFixed(8);
+    
+    await db
+      .update(walletBalances)
+      .set({
+        trainingStakeHive: newStake,
+        trainingStakeEscrowHive: newEscrow,
+        updatedAt: new Date(),
+      })
+      .where(eq(walletBalances.walletAddress, walletAddress))
+      .returning();
+    
+    const updated = await this.getWalletBalance(walletAddress);
+    if (!updated) {
+      throw new Error("Failed to escrow trial stake");
+    }
+    return updated;
+  }
+
+  async releaseEscrowToLocked(walletAddress: string, amount: string): Promise<WalletBalance> {
+    const balance = await this.getOrCreateWalletBalance(walletAddress);
+    const currentEscrow = parseFloat(balance.trainingStakeEscrowHive || "0");
+    const releaseAmount = parseFloat(amount);
+    
+    if (currentEscrow < releaseAmount) {
+      throw new Error(`Insufficient escrow to release. Available: ${currentEscrow}, Required: ${releaseAmount}`);
+    }
+    
+    const newEscrow = (currentEscrow - releaseAmount).toFixed(8);
+    
+    await db
+      .update(walletBalances)
+      .set({
+        trainingStakeEscrowHive: newEscrow,
+        updatedAt: new Date(),
+      })
+      .where(eq(walletBalances.walletAddress, walletAddress))
+      .returning();
+    
+    const updated = await this.getWalletBalance(walletAddress);
+    if (!updated) {
+      throw new Error("Failed to release escrow");
+    }
+    return updated;
+  }
+
+  async forfeitEscrow(walletAddress: string, amount: string): Promise<WalletBalance> {
+    const balance = await this.getOrCreateWalletBalance(walletAddress);
+    const currentEscrow = parseFloat(balance.trainingStakeEscrowHive || "0");
+    const forfeitAmount = parseFloat(amount);
+    
+    if (currentEscrow < forfeitAmount) {
+      throw new Error(`Insufficient escrow to forfeit. Available: ${currentEscrow}, Required: ${forfeitAmount}`);
+    }
+    
+    const newEscrow = (currentEscrow - forfeitAmount).toFixed(8);
+    
+    await db
+      .update(walletBalances)
+      .set({
+        trainingStakeEscrowHive: newEscrow,
+        updatedAt: new Date(),
+      })
+      .where(eq(walletBalances.walletAddress, walletAddress))
+      .returning();
+    
+    const updated = await this.getWalletBalance(walletAddress);
+    if (!updated) {
+      throw new Error("Failed to forfeit escrow");
+    }
+    return updated;
+  }
+
+  async updateRankupFailStreak(walletAddress: string, streak: number, targetLevel: number | null): Promise<WalletBalance> {
+    await db
+      .update(walletBalances)
+      .set({
+        rankupFailStreak: streak,
+        rankupFailStreakTargetLevel: targetLevel,
+        updatedAt: new Date(),
+      })
+      .where(eq(walletBalances.walletAddress, walletAddress))
+      .returning();
+    
+    const updated = await this.getWalletBalance(walletAddress);
+    if (!updated) {
+      throw new Error("Failed to update rankup fail streak");
+    }
+    return updated;
   }
 
   async sweepRewardsPool(toWallet: string): Promise<string> {

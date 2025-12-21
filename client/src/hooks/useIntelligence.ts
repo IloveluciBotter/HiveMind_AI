@@ -35,9 +35,13 @@ export function useIntelligence() {
       let newLevel = prev.level;
       let xpToNext = prev.xpToNextLevel;
 
+      // NOTE: Level increases should ONLY happen via rank-up trial completion.
+      // Regular training sessions should only grant XP, not increase level.
+      // This auto-leveling logic will be disabled in favor of rank-up trials.
+      // TODO: Remove auto-leveling and enforce level increases via rank-up trials only.
       while (newXp >= xpToNext) {
         newXp -= xpToNext;
-        newLevel++;
+        // newLevel++; // DISABLED: Level increases only via rank-up trials
         xpToNext = Math.floor(xpToNext * 1.2);
       }
 
