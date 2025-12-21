@@ -1,0 +1,3 @@
+ai-hive-mind.com, www.ai-hive-mind.com {
+  reverse_proxy app:5000
+}
