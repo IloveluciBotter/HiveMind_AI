@@ -81,7 +81,7 @@ export interface IStorage {
     isBenchmark?: boolean;
     questionType?: "mcq" | "numeric";
     numericAnswer?: string;
-    numericTolerance?: number;
+    numericTolerance?: number | null;
     numericUnit?: string;
   }): Promise<Question>;
   createQuestionsBatch(data: Array<{
@@ -363,13 +363,13 @@ export class DbStorage implements IStorage {
     isBenchmark?: boolean;
     questionType?: "mcq" | "numeric";
     numericAnswer?: string;
-    numericTolerance?: number;
+    numericTolerance?: number | null;
     numericUnit?: string;
   }): Promise<Question> {
     const result = await db.insert(questions).values({
       ...data,
       questionType: data.questionType || "mcq",
-      numericTolerance: data.numericTolerance !== undefined ? data.numericTolerance.toString() : null,
+      numericTolerance: data.numericTolerance != null ? String(data.numericTolerance) : null,
     }).returning();
     return result[0];
   }

@@ -111,6 +111,7 @@ export function TrainPage({
   const [trialRequirements, setTrialRequirements] = useState<{ walletHold: number; vaultStake: number } | null>(null);
   const [showRankupModal, setShowRankupModal] = useState(false);
   const [startingRankup, setStartingRankup] = useState(false);
+  const [selectedDifficulty, setSelectedDifficulty] = useState<"low" | "medium" | "high" | "extreme">("medium");
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -136,15 +137,27 @@ export function TrainPage({
           // Load trial questions
           try {
             const questionsData = await api.rankup.getQuestions();
+            if (!questionsData.questions || questionsData.questions.length === 0) {
+              throw new Error("No questions returned from server");
+            }
             setQuestions(questionsData.questions);
             setQuestionIds(questionsData.questions.map(q => q.id));
             setCurrentIndex(0);
             setScore({ correct: 0, total: 0 });
             setUserAnswers([]);
             setStartTime(Date.now());
-          } catch (error) {
+          } catch (error: any) {
             console.error("Failed to load trial questions:", error);
-            setStakeError("Failed to load trial questions");
+            const errorMessage = error?.message || "Failed to load trial questions";
+            // If it's an insufficient questions error, provide helpful message
+            if (errorMessage.includes("Insufficient questions") || errorMessage.includes("Not enough questions")) {
+              setStakeError("Not enough questions available for this trial. Please contact an admin to add more questions.");
+            } else {
+              setStakeError(`Failed to load trial questions: ${errorMessage}`);
+            }
+            // Exit trial mode so user can continue with normal training
+            setTrialMode("normal");
+            setActiveTrial(null);
           }
         } else {
           // Normal mode
@@ -185,7 +198,12 @@ export function TrainPage({
     }
   };
 
-  const currentFee = economyConfig?.fees.medium || 1;
+  const getCurrentFee = (difficulty: "low" | "medium" | "high" | "extreme"): number => {
+    if (!economyConfig) return 1;
+    return economyConfig.fees[difficulty] || economyConfig.fees.medium;
+  };
+  
+  const currentFee = getCurrentFee(selectedDifficulty);
 
   const loadQuestions = async (trackId: string) => {
     if (trialMode === "trial") {
@@ -272,6 +290,11 @@ export function TrainPage({
   };
 
   const submitTrainingAttempt = async () => {
+    // Double-submit protection
+    if (submitting) {
+      return;
+    }
+    
     if (trialMode === "trial") {
       // Submit trial completion
       if (!activeTrial || questionIds.length === 0 || userAnswers.length !== questionIds.length) {
@@ -309,7 +332,9 @@ export function TrainPage({
     }
 
     // Normal training submission
-    if (!selectedTrack || questions.length === 0) return;
+    if (!selectedTrack || questions.length === 0) {
+      return;
+    }
     
     setSubmitting(true);
     try {
@@ -326,7 +351,7 @@ export function TrainPage({
 
       const result = await api.train.submit({
         trackId: selectedTrack,
-        difficulty: "medium",
+        difficulty: selectedDifficulty,
         content: JSON.stringify({ answers: userAnswers }),
         answers: answers as (number | string)[],
         questionIds: questionIds,
@@ -346,6 +371,9 @@ export function TrainPage({
         setEconomyResult(result.economy);
         setStakeHive(result.economy.stakeAfter);
       }
+      
+      // Always refresh stake from server after settlement (source of truth)
+      await refreshStake();
     } catch (error) {
       console.error("Failed to submit training attempt:", error);
     }
@@ -452,9 +480,24 @@ export function TrainPage({
             Answer questions to make HiveMind smarter!
           </p>
           {economyConfig && (
-            <p className="text-gray-500 text-sm mt-2">
-              Training fee: {currentFee} HIVE (varies by difficulty)
-            </p>
+            <div className="mt-4 space-y-2">
+              <p className="text-gray-500 text-sm">
+                Training fee: <span className="font-semibold text-white">{currentFee.toFixed(4)} HIVE</span>
+              </p>
+              <div className="flex items-center justify-center gap-2">
+                <label className="text-sm text-gray-400">Difficulty:</label>
+                <select
+                  value={selectedDifficulty}
+                  onChange={(e) => setSelectedDifficulty(e.target.value as "low" | "medium" | "high" | "extreme")}
+                  className="bg-gray-800 border border-gray-600 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-purple-500"
+                >
+                  <option value="low">Low ({getCurrentFee("low").toFixed(4)} HIVE)</option>
+                  <option value="medium">Medium ({getCurrentFee("medium").toFixed(4)} HIVE)</option>
+                  <option value="high">High ({getCurrentFee("high").toFixed(4)} HIVE)</option>
+                  <option value="extreme">Extreme ({getCurrentFee("extreme").toFixed(4)} HIVE)</option>
+                </select>
+              </div>
+            </div>
           )}
         </div>
 
@@ -759,10 +802,15 @@ export function TrainPage({
 
               {economyResult && (
                 <div className="bg-gray-700/30 rounded-lg p-4 mb-6">
-                  <h3 className="text-sm font-medium text-gray-400 mb-3 flex items-center justify-center gap-2">
-                    <Coins className="w-4 h-4" />
-                    Stake Economy
-                  </h3>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-medium text-gray-400 flex items-center gap-2">
+                      <Coins className="w-4 h-4" />
+                      Stake Economy
+                    </h3>
+                    <span className="text-xs text-gray-500 capitalize">
+                      Difficulty: {selectedDifficulty}
+                    </span>
+                  </div>
                   <div className="grid grid-cols-3 gap-3 text-sm">
                     <div className="text-center">
                       <div className="text-gray-400 text-xs mb-1">Fee Reserved</div>

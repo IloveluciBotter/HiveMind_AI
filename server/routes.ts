@@ -1522,6 +1522,26 @@ export async function registerRoutes(
         evidencePacket,
       });
 
+      // Calculate fee settlement based on score (BEFORE sending response)
+      const { settleTrainingAttempt } = await import("./services/settlement");
+      const settlementResult = await settleTrainingAttempt(
+        attempt.id,
+        publicKey,
+        feeHive,
+        scorePct,
+        stakeAfterReserve
+      );
+
+      if (!settlementResult.success) {
+        logger.error({
+          requestId: req.requestId,
+          error: "Settlement failed",
+          attemptId: attempt.id,
+          details: settlementResult.error,
+        });
+        // Continue anyway - settlement failure shouldn't block response
+      }
+
       // Return results including per-question grading (server-calculated, anti-cheat)
       res.json({
         id: updatedAttempt.id,
@@ -1542,58 +1562,11 @@ export async function registerRoutes(
         },
         economy: {
           feeHive,
-          costHive: 0, // Will be calculated by settlement
-          refundHive: 0, // Will be calculated by settlement
-          stakeAfter: stakeAfterReserve,
+          costHive: settlementResult.costHive,
+          refundHive: settlementResult.refundHive,
+          stakeAfter: settlementResult.stakeAfter,
         },
       });
-      
-      // Calculate fee settlement based on score
-      const economyConfig = getEconomyConfig();
-      const passed = scorePct >= economyConfig.passThreshold;
-      const feeSettlement = calculateFeeSettlement(feeHive, scorePct, passed);
-      
-      // Refund portion back to stake
-      let stakeAfter = stakeAfterReserve;
-      if (feeSettlement.refundHive > 0) {
-        stakeAfter = stakeAfterReserve + feeSettlement.refundHive;
-        await storage.updateStakeBalance(publicKey, stakeAfter.toFixed(8));
-        
-        await storage.createStakeLedgerEntry({
-          walletAddress: publicKey,
-          amount: feeSettlement.refundHive.toFixed(8),
-          balanceAfter: stakeAfter.toFixed(8),
-          reason: "fee_refund",
-          attemptId: attempt.id,
-          metadata: { scorePct, refundHive: feeSettlement.refundHive },
-        });
-        
-        await audit.log("fee_refunded", {
-          targetType: "stake",
-          targetId: attempt.id,
-          metadata: { refundHive: feeSettlement.refundHive, scorePct, stakeAfter },
-        });
-      }
-      
-      // Route cost to rewards pool
-      if (feeSettlement.costHive > 0) {
-        await storage.addToRewardsPool(feeSettlement.costHive.toFixed(8));
-        
-        await storage.createStakeLedgerEntry({
-          walletAddress: publicKey,
-          amount: (-feeSettlement.costHive).toFixed(8),
-          balanceAfter: stakeAfter.toFixed(8),
-          reason: "fee_cost_to_rewards",
-          attemptId: attempt.id,
-          metadata: { costHive: feeSettlement.costHive, scorePct },
-        });
-        
-        await audit.log("fee_routed_to_rewards", {
-          targetType: "rewards_pool",
-          targetId: attempt.id,
-          metadata: { costHive: feeSettlement.costHive, scorePct },
-        });
-      }
       
       // Calculate rewards if approved
       let styleCreditsEarned = 0;
@@ -2805,26 +2778,61 @@ export async function registerRoutes(
         return res.status(500).json({ error: "No tracks available" });
       }
 
-      // Collect questions from all tracks with difficulty >= minAvgDifficulty
       const minDifficulty = Math.ceil(parseFloat(trial.minAvgDifficulty));
-      const allQuestions: any[] = [];
-      
-      for (const track of tracks) {
-        const trackQuestions = await storage.getQuestionsByTrack(track.id);
-        const filtered = trackQuestions.filter(q => q.complexity >= minDifficulty);
-        allQuestions.push(...filtered);
+      const minRequired = 5; // Minimum required questions
+      const needed = trial.questionCount; // Preferred count
+      let allQuestions: any[] = [];
+      let fallbackUsed = false;
+      let currentDifficulty = minDifficulty;
+
+      // Try to collect questions starting with minDifficulty, then fallback to lower difficulties
+      while (currentDifficulty >= 1 && allQuestions.length < needed) {
+        const questionsAtDifficulty: any[] = [];
+        
+        for (const track of tracks) {
+          const trackQuestions = await storage.getQuestionsByTrack(track.id);
+          const filtered = trackQuestions.filter(q => q.complexity >= currentDifficulty);
+          questionsAtDifficulty.push(...filtered);
+        }
+        
+        // Remove duplicates (questions already in allQuestions)
+        const existingIds = new Set(allQuestions.map(q => q.id));
+        const uniqueQuestions = questionsAtDifficulty.filter(q => !existingIds.has(q.id));
+        allQuestions.push(...uniqueQuestions);
+        
+        // If we have enough, stop
+        if (allQuestions.length >= needed) {
+          break;
+        }
+        
+        // If we tried a lower difficulty, mark fallback as used
+        if (currentDifficulty < minDifficulty) {
+          fallbackUsed = true;
+        }
+        
+        // Try next lower difficulty (down to 1)
+        if (allQuestions.length < needed && currentDifficulty > 1) {
+          currentDifficulty--;
+        } else {
+          break;
+        }
       }
 
-      if (allQuestions.length < trial.questionCount) {
-        return res.status(500).json({
+      // Check if we have the minimum required (5 questions)
+      if (allQuestions.length < minRequired) {
+        return res.status(400).json({
           error: "Insufficient questions",
-          message: `Not enough questions with difficulty >= ${minDifficulty}. Found ${allQuestions.length}, need ${trial.questionCount}`,
+          minDifficulty,
+          found: allQuestions.length,
+          needed: minRequired,
+          fallbackUsed,
         });
       }
 
-      // Random sample
+      // Shuffle randomly
       const shuffled = allQuestions.sort(() => Math.random() - 0.5);
-      const selected = shuffled.slice(0, trial.questionCount);
+      // Return up to trial.questionCount (20) if available, otherwise return what we have
+      const selected = shuffled.slice(0, Math.min(allQuestions.length, needed));
 
       // Exclude numericAnswer (security)
       const sanitized = selected.map(q => {
@@ -2875,10 +2883,26 @@ export async function registerRoutes(
       }
 
       // Validate question/answer counts
-      if (body.questionIds.length !== body.answers.length || body.questionIds.length !== trial.questionCount) {
+      // questionIds and answers must match in length
+      if (body.questionIds.length !== body.answers.length) {
         return res.status(400).json({
           error: "Invalid answer count",
-          message: `Expected ${trial.questionCount} answers, got ${body.answers.length}`,
+          message: `Question IDs count (${body.questionIds.length}) does not match answers count (${body.answers.length})`,
+        });
+      }
+      
+      // Must have at least 1 answer, and cannot exceed trial.questionCount
+      if (body.answers.length === 0) {
+        return res.status(400).json({
+          error: "Invalid answer count",
+          message: "Must provide at least 1 answer",
+        });
+      }
+      
+      if (body.answers.length > trial.questionCount) {
+        return res.status(400).json({
+          error: "Invalid answer count",
+          message: `Received ${body.answers.length} answers, but trial only has ${trial.questionCount} questions`,
         });
       }
 
