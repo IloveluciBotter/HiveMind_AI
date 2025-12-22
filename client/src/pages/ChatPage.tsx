@@ -19,6 +19,8 @@ interface Message {
   timestamp?: string;
   sources?: Source[];
   isGrounded?: boolean;
+  usedCorpus?: boolean;
+  grounded?: boolean;
 }
 
 export function ChatPage({ intelligenceLevel }: ChatPageProps) {
@@ -87,6 +89,8 @@ export function ChatPage({ intelligenceLevel }: ChatPageProps) {
         content: response.response,
         sources: response.sources || [],
         isGrounded: response.isGrounded,
+        usedCorpus: response.usedCorpus,
+        grounded: response.grounded,
       };
       setMessages((prev) => [...prev, aiMessage]);
     } catch (err: any) {
@@ -211,48 +215,60 @@ export function ChatPage({ intelligenceLevel }: ChatPageProps) {
                   <p className="whitespace-pre-wrap">{message.content}</p>
                 </div>
                 
-                {message.role === "assistant" && message.sources && message.sources.length > 0 && (
+                {message.role === "assistant" && (
                   <div className="mt-2">
-                    <button
-                      onClick={() => toggleSources(message.id)}
-                      className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
-                    >
-                      <BookOpen className="w-3 h-3" />
-                      <span>{message.sources.length} source{message.sources.length > 1 ? "s" : ""}</span>
-                      {expandedSources.has(message.id) ? (
-                        <ChevronUp className="w-3 h-3" />
-                      ) : (
-                        <ChevronDown className="w-3 h-3" />
-                      )}
-                    </button>
-                    
-                    {expandedSources.has(message.id) && (
-                      <div className="mt-2 space-y-2">
-                        {message.sources.map((source, idx) => (
-                          <div
-                            key={idx}
-                            className="bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm"
-                          >
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-purple-400 font-medium">
-                                {source.title || `Source ${idx + 1}`}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {Math.round(source.score * 100)}% match
-                              </span>
-                            </div>
-                            <p className="text-gray-400 text-xs">{source.chunkText}</p>
-                          </div>
-                        ))}
+                    {/* Show grounding status */}
+                    {message.usedCorpus === false && (
+                      <div className="text-xs text-yellow-500 flex items-center gap-1 mb-2">
+                        <AlertCircle className="w-3 h-3" />
+                        Ungrounded response
                       </div>
                     )}
-                  </div>
-                )}
-                
-                {message.role === "assistant" && message.isGrounded === false && (
-                  <div className="mt-1 text-xs text-yellow-500 flex items-center gap-1">
-                    <AlertCircle className="w-3 h-3" />
-                    Ungrounded response
+                    {message.usedCorpus === true && message.grounded === true && (
+                      <div className="text-xs text-green-500 flex items-center gap-1 mb-2">
+                        <BookOpen className="w-3 h-3" />
+                        Grounded
+                      </div>
+                    )}
+                    
+                    {/* Show sources if available */}
+                    {message.sources && message.sources.length > 0 && (
+                      <div>
+                        <button
+                          onClick={() => toggleSources(message.id)}
+                          className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-300 transition-colors"
+                        >
+                          <BookOpen className="w-3 h-3" />
+                          <span>{message.sources.length} source{message.sources.length > 1 ? "s" : ""}</span>
+                          {expandedSources.has(message.id) ? (
+                            <ChevronUp className="w-3 h-3" />
+                          ) : (
+                            <ChevronDown className="w-3 h-3" />
+                          )}
+                        </button>
+                        
+                        {expandedSources.has(message.id) && (
+                          <div className="mt-2 space-y-2">
+                            {message.sources.map((source, idx) => (
+                              <div
+                                key={idx}
+                                className="bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm"
+                              >
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-purple-400 font-medium">
+                                    {source.title || `Source ${idx + 1}`}
+                                  </span>
+                                  <span className="text-xs text-gray-500">
+                                    {Math.round(source.score * 100)}% match
+                                  </span>
+                                </div>
+                                <p className="text-gray-400 text-xs">{source.chunkText}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

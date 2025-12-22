@@ -32,12 +32,16 @@ export async function createApp(): Promise<{ app: express.Application; httpServe
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Allow requests with no origin (mobile apps, Postman, etc.) in development
-        if (!origin && env.NODE_ENV === "development") {
+        // In development, allow all origins (including localhost)
+        if (env.NODE_ENV === "development") {
+          return callback(null, true);
+        }
+        // Allow requests with no origin (mobile apps, Postman, etc.)
+        if (!origin) {
           return callback(null, true);
         }
         // Allow requests from allowed origins
-        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
           return callback(null, true);
         }
         callback(new Error("Not allowed by CORS"));

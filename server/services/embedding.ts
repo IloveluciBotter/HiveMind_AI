@@ -28,7 +28,14 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResult> 
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Embedding API error: ${response.status} - ${errorText}`);
+      let errorMessage = `Embedding API error ${response.status}: ${errorText}`;
+      
+      // Provide helpful instructions for common 404 model not found errors
+      if (response.status === 404 && errorText.includes("not found")) {
+        errorMessage = `Model "${OLLAMA_EMBED_MODEL}" not found in Ollama. Please run: ollama pull ${OLLAMA_EMBED_MODEL}`;
+      }
+      
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();

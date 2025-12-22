@@ -72,9 +72,11 @@ export async function embedCorpusItem(corpusItemId: string): Promise<number> {
 export async function searchCorpus(
   query: string,
   k: number = 5,
-  trackId?: string
+  trackId?: string,
+  minScore?: number
 ): Promise<ChunkResult[]> {
   const config = getRAGConfig();
+  const effectiveMinScore = minScore ?? config.minScore;
   const { embedding } = await generateEmbedding(query);
   const embeddingStr = `[${embedding.join(",")}]`;
 
@@ -122,7 +124,7 @@ export async function searchCorpus(
   const rows = queryResult.rows || queryResult;
   
   return rows
-    .filter((r: any) => r.score >= config.minScore)
+    .filter((r: any) => r.score >= effectiveMinScore)
     .map((r: any) => ({
       id: r.id,
       corpusItemId: r.corpusItemId,

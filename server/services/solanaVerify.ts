@@ -1,4 +1,5 @@
 import { Connection, PublicKey, ParsedTransactionWithMeta, AccountInfo, ParsedAccountData } from "@solana/web3.js";
+import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getEconomyConfig } from "./economy";
 import { logger } from "../middleware/logger";
 
@@ -227,12 +228,165 @@ export async function verifyDeposit(
       };
     }
 
-    const tolerance = 0.00000001;
-    if (Math.abs(verifiedAmount - claimedAmount) > tolerance) {
-      return { 
-        valid: false, 
-        error: `Amount mismatch: claimed ${claimedAmount}, found ${verifiedAmount}` 
+    // Harden amount verification using balance deltas from transaction metadata
+    // This prevents 0-amount transfers and ensures we only credit actual deposits
+    try {
+      // Compute the vault's associated token account (ATA) for the expected mint
+      const vaultPubkey = new PublicKey(expectedRecipient);
+      const mintPubkey = new PublicKey(mint || expectedMint);
+      
+      // Determine which token program to use based on mint
+      // Try Token-2022 first (HIVE uses Token-2022), fallback to legacy Token
+      // TOKEN_2022_PROGRAM_ID and TOKEN_PROGRAM_ID from @solana/spl-token are PublicKey objects
+      let tokenProgramId = TOKEN_2022_PROGRAM_ID;
+      try {
+        // Check if it's actually Token-2022 by verifying the mint account owner
+        const mintAccountInfo = await connection.getAccountInfo(mintPubkey);
+        if (mintAccountInfo?.owner.toBase58() !== TOKEN_2022_PROGRAM_ID.toBase58()) {
+          tokenProgramId = TOKEN_PROGRAM_ID;
+        }
+      } catch (err) {
+        // If we can't verify, default to Token-2022 for HIVE
+        logger.warn({ message: "Could not verify mint program, defaulting to Token-2022", error: err });
+      }
+      
+      const vaultATA = await getAssociatedTokenAddress(
+        mintPubkey,
+        vaultPubkey,
+        true, // allowOwnerOffCurve - vault might not be a standard wallet
+        tokenProgramId,
+        ASSOCIATED_TOKEN_PROGRAM_ID
+      );
+      const vaultATAStr = vaultATA.toBase58();
+
+      // Find balance entries for the vault ATA in transaction metadata
+      const preBalances = tx.meta?.preTokenBalances || [];
+      const postBalances = tx.meta?.postTokenBalances || [];
+
+      // Helper to get account address from accountKeys array
+      const getAccountAddress = (index: number): string | null => {
+        try {
+          const accountKey = tx.transaction.message.accountKeys[index];
+          if (!accountKey) return null;
+          // accountKey can be PublicKey object, string, or object with pubkey property
+          if (typeof accountKey === "string") {
+            return accountKey;
+          }
+          // Check if it's a PublicKey object (has toBase58 method)
+          if (accountKey instanceof PublicKey || (typeof accountKey === "object" && "toBase58" in accountKey)) {
+            return (accountKey as PublicKey).toBase58();
+          }
+          // Check if it's an object with pubkey property
+          if ("pubkey" in accountKey && accountKey.pubkey) {
+            const pubkey = accountKey.pubkey;
+            return pubkey instanceof PublicKey ? pubkey.toBase58() : String(pubkey);
+          }
+          return null;
+        } catch {
+          return null;
+        }
       };
+
+      // Find pre-balance entry for vault ATA (match by account address and mint)
+      const preBalanceEntry = preBalances.find((bal) => {
+        if (bal.accountIndex === undefined) return false;
+        const accountAddress = getAccountAddress(bal.accountIndex);
+        return accountAddress === vaultATAStr && bal.mint?.toLowerCase() === mint.toLowerCase();
+      });
+
+      // Find post-balance entry for vault ATA (match by account address and mint)
+      const postBalanceEntry = postBalances.find((bal) => {
+        if (bal.accountIndex === undefined) return false;
+        const accountAddress = getAccountAddress(bal.accountIndex);
+        return accountAddress === vaultATAStr && bal.mint?.toLowerCase() === mint.toLowerCase();
+      });
+
+      // Extract balance amounts (treat missing as 0)
+      const preBalance = preBalanceEntry?.uiTokenAmount?.uiAmount ?? 0;
+      const postBalance = postBalanceEntry?.uiTokenAmount?.uiAmount ?? 0;
+      const balanceDecimals = postBalanceEntry?.uiTokenAmount?.decimals ?? preBalanceEntry?.uiTokenAmount?.decimals ?? decimals;
+
+      // Compute delta (amount received)
+      const delta = postBalance - preBalance;
+
+      // Structured logging
+      logger.info({
+        message: "Deposit amount verification",
+        txSignature,
+        vaultATA: vaultATAStr,
+        mint: mint.toLowerCase(),
+        decimals: balanceDecimals,
+        preBalance,
+        postBalance,
+        delta,
+        claimedAmount,
+        expectedDepositAmount: claimedAmount,
+      });
+
+      // Require delta > 0 (no zero-amount transfers)
+      if (delta <= 0) {
+        logger.warn({
+          message: "deposit_invalid_amount",
+          txSignature,
+          vaultATA: vaultATAStr,
+          delta,
+          claimedAmount,
+          reason: "delta <= 0",
+        });
+        return {
+          valid: false,
+          error: "Invalid deposit amount: transaction did not increase vault balance",
+        };
+      }
+
+      // Require delta >= claimedAmount (with small tolerance for rounding)
+      const tolerance = 0.00000001;
+      if (delta < claimedAmount - tolerance) {
+        logger.warn({
+          message: "deposit_invalid_amount",
+          txSignature,
+          vaultATA: vaultATAStr,
+          delta,
+          claimedAmount,
+          reason: "delta < claimedAmount",
+        });
+        return {
+          valid: false,
+          error: `Amount mismatch: claimed ${claimedAmount}, but vault balance only increased by ${delta}`,
+        };
+      }
+
+      // Use delta as the verified amount (more accurate than instruction parsing)
+      verifiedAmount = delta;
+      decimals = balanceDecimals;
+
+      logger.info({
+        message: "Deposit amount verified successfully",
+        txSignature,
+        verifiedAmount: delta,
+        decimals: balanceDecimals,
+      });
+    } catch (balanceError) {
+      logger.error({
+        message: "Failed to verify deposit amount using balance deltas",
+        txSignature,
+        error: balanceError instanceof Error ? balanceError.message : String(balanceError),
+      });
+      
+      // Fallback to instruction-based verification if balance delta check fails
+      // (for backwards compatibility, but log a warning)
+      logger.warn({
+        message: "Falling back to instruction-based amount verification",
+        txSignature,
+      });
+      
+      const tolerance = 0.00000001;
+      if (Math.abs(verifiedAmount - claimedAmount) > tolerance) {
+        return { 
+          valid: false, 
+          error: `Amount mismatch: claimed ${claimedAmount}, found ${verifiedAmount}` 
+        };
+      }
     }
 
     return {

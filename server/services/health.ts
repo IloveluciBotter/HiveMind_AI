@@ -27,9 +27,16 @@ interface HealthResponse {
 
 function getVersion(): string {
   try {
-    const sha = execSync("git rev-parse --short HEAD 2>/dev/null", { encoding: "utf8" }).trim();
+    // Use shell option for Windows compatibility (git may not be in PATH)
+    const sha = execSync("git rev-parse --short HEAD", { 
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"], // Suppress stderr to avoid Windows path errors
+      shell: true, // Use shell on Windows to find git in PATH
+    }).trim();
     return sha || "1.0.0";
-  } catch {
+  } catch (error: any) {
+    // Catch ENOENT (command not found) and other errors silently
+    // Return fallback version without printing error
     return process.env.APP_VERSION || "1.0.0";
   }
 }

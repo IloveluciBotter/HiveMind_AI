@@ -10,6 +10,7 @@ import {
   sanitizeCitations,
   getRAGGuardConfig,
 } from "./services/ragGuard";
+import { getLevelPolicy, type LevelPolicy } from "./services/levelPolicy";
 
 const LMSTUDIO_BASE_URL = process.env.LMSTUDIO_BASE_URL || "";
 const LMSTUDIO_MODEL = process.env.LMSTUDIO_MODEL || "";
@@ -145,6 +146,10 @@ export interface ChatResponseResult {
   corpusItemsUsed: string[];
   sources: Array<{ chunkText: string; score: number; title: string | null }>;
   isGrounded: boolean;
+  usedCorpus: boolean;
+  grounded: boolean;
+  level: number;
+  policySnapshot: LevelPolicy;
 }
 
 export async function generateChatResponse(
@@ -152,43 +157,93 @@ export async function generateChatResponse(
   aiLevel: number,
   trackId?: string
 ): Promise<ChatResponseResult> {
-  const style = getIntelligenceStyle(aiLevel);
+  // Get level-based policy
+  const policy = getLevelPolicy(aiLevel);
+  
+  // Build system prompt based on level and simplicity mode
+  let systemPrompt = "";
+  if (policy.simplicityMode) {
+    systemPrompt = `You are HiveMind AI at early training level ${aiLevel}. 
+You're still learning and should give SHORT, SIMPLE responses.
+- Use basic vocabulary only
+- Keep responses concise
+- Avoid technical jargon
+- Be friendly but a bit unsure`;
+  } else {
+    systemPrompt = `You are HiveMind AI at training level ${aiLevel}.`;
+    if (aiLevel <= 30) {
+      systemPrompt += " Provide clear, helpful responses with examples when appropriate.";
+    } else if (aiLevel <= 70) {
+      systemPrompt += " Provide detailed, structured responses with technical accuracy.";
+    } else {
+      systemPrompt += " Provide comprehensive, expert-level responses with deep understanding and precision.";
+    }
+  }
   
   let ragSources: ChunkResult[] = [];
   let corpusItemIds: string[] = [];
-  let isGrounded = false;
-  let systemPrompt = style.systemPrompt;
+  let usedCorpus = false;
+  let grounded = false;
   
-  try {
-    ragSources = await searchCorpus(userMessage, 5, trackId);
-    
-    // Apply RAG guard: sanitize chunks for prompt injection protection
-    const guardConfig = getRAGGuardConfig();
-    const sanitizedChunks = sanitizeChunks(ragSources, guardConfig);
-    const validChunks = filterValidChunks(sanitizedChunks);
-    
-    // Update corpus items used to only include valid chunks
-    corpusItemIds = Array.from(new Set(validChunks.map(s => s.originalChunk?.corpusItemId).filter(Boolean) as string[]));
-    isGrounded = validChunks.length > 0;
-    
-    // Format sanitized sources for prompt
-    const ragContext = formatSanitizedSourcesForPrompt(sanitizedChunks);
-    
-    if (ragContext) {
-      systemPrompt += ragContext;
-      // Add RAG guard system instruction
-      systemPrompt += getRAGGuardSystemInstruction();
-      systemPrompt += "\n\nIMPORTANT: Base your response on the provided sources. Cite specific information from them when relevant.";
-    } else if (aiLevel < 10) {
-      systemPrompt += "\n\nNote: You don't have specific training data for this topic yet. Be honest about this limitation.";
+  // Only search corpus if retrieval is enabled
+  if (policy.retrievalEnabled && policy.topK > 0) {
+    try {
+      // For "strong" preference, search with lower threshold to get more results for evaluation
+      const searchMinScore = policy.preferCorpus === "strong" 
+        ? Math.max(0, policy.minScore - 0.05)
+        : policy.minScore;
+      
+      const searchResults = await searchCorpus(userMessage, policy.topK, trackId, searchMinScore);
+      
+      // Determine if we should use corpus based on policy
+      const bestScore = searchResults.length > 0 ? searchResults[0].score : 0;
+      const shouldUseCorpus = 
+        bestScore >= policy.minScore || 
+        (policy.preferCorpus === "strong" && searchResults.some(r => r.score >= (policy.minScore - 0.05)));
+      
+      if (shouldUseCorpus && searchResults.length > 0) {
+        usedCorpus = true;
+        
+        // Filter results by actual minScore (even if we searched with lower threshold for "strong" preference)
+        const filteredResults = searchResults.filter(r => r.score >= policy.minScore);
+        const resultsToUse = filteredResults.length > 0 ? filteredResults : searchResults;
+        
+        // Apply RAG guard: sanitize chunks for prompt injection protection
+        const guardConfig = getRAGGuardConfig();
+        const sanitizedChunks = sanitizeChunks(resultsToUse, guardConfig);
+        const validChunks = filterValidChunks(sanitizedChunks);
+        
+        // Update corpus items used to only include valid chunks
+        corpusItemIds = Array.from(new Set(validChunks.map(s => s.originalChunk?.corpusItemId).filter(Boolean) as string[]));
+        grounded = validChunks.length > 0;
+        
+        // Format sanitized sources for prompt
+        const ragContext = formatSanitizedSourcesForPrompt(sanitizedChunks);
+        
+        if (ragContext) {
+          systemPrompt += ragContext;
+          // Add RAG guard system instruction
+          systemPrompt += getRAGGuardSystemInstruction();
+          
+          if (policy.requireCitations) {
+            systemPrompt += "\n\nIMPORTANT: You MUST cite specific information from the provided sources. Include citations like [Source 1], [Source 2], etc. in your response.";
+          } else {
+            systemPrompt += "\n\nIMPORTANT: Base your response on the provided sources. Cite specific information from them when relevant.";
+          }
+        }
+        
+        // Update ragSources to only include valid chunks for citation
+        ragSources = validChunks
+          .map(s => s.originalChunk!)
+          .filter(Boolean);
+      }
+    } catch (error: any) {
+      console.warn("[RAG] Search failed, falling back to ungrounded response:", error.message);
     }
-    
-    // Update ragSources to only include valid chunks for citation
-    ragSources = validChunks
-      .map(s => s.originalChunk!)
-      .filter(Boolean);
-  } catch (error: any) {
-    console.warn("[RAG] Search failed, falling back to ungrounded response:", error.message);
+  }
+  
+  if (!usedCorpus && policy.simplicityMode) {
+    systemPrompt += "\n\nNote: You don't have specific training data for this topic yet. Be honest about this limitation.";
   }
   
   if (!LMSTUDIO_BASE_URL || !LMSTUDIO_MODEL) {
@@ -202,21 +257,15 @@ export async function generateChatResponse(
       ? `${systemPrompt}\n\nUser question: ${userMessage}`
       : userMessage;
     
-    let aiResponse = await lmstudioChat(
+    const aiResponse = await lmstudioChat(
       [
         { role: "user", content: userMessageWithContext },
       ],
       {
-        temperature: style.temperature,
-        max_tokens: style.maxTokens,
+        temperature: policy.temperature,
+        max_tokens: policy.maxAnswerTokens,
       }
     );
-    
-    if (!isGrounded && aiLevel < 10) {
-      aiResponse += "\n\n(Note: This topic isn't in my training corpus yet. The community can help me learn more!)";
-    } else if (!isGrounded) {
-      aiResponse += "\n\n[Ungrounded response - not based on verified corpus data]";
-    }
     
     // Sanitize citations before returning to client (remove secrets, safe truncation)
     const sanitizedSources = sanitizeCitations(ragSources, 240);
@@ -225,7 +274,11 @@ export async function generateChatResponse(
       response: aiResponse,
       corpusItemsUsed: corpusItemIds,
       sources: sanitizedSources,
-      isGrounded,
+      isGrounded: grounded, // Keep for backwards compatibility
+      usedCorpus,
+      grounded,
+      level: aiLevel,
+      policySnapshot: policy,
     };
   } catch (error: any) {
     console.error(`[LM Studio] Chat error for ${LMSTUDIO_BASE_URL}:`, error.message || error);

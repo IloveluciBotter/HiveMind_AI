@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Coins, ArrowRight, Check, AlertTriangle, Loader2, ExternalLink, Copy } from "lucide-react";
 import { api } from "@/lib/api";
 
@@ -12,6 +12,65 @@ interface StakeModalProps {
 
 type Step = "input" | "sending" | "confirming" | "success" | "error";
 
+/**
+ * Helper to detect wallet rejection errors across common error shapes
+ */
+function isUserRejectedError(err: unknown): boolean {
+  if (!err) return false;
+  
+  if (typeof err === "object") {
+    // Check for wallet error codes (4001 is standard rejection code)
+    if ("code" in err && err.code === 4001) {
+      return true;
+    }
+    
+    // Check error name for wallet-specific errors (only if message indicates rejection)
+    if ("name" in err) {
+      const name = String(err.name);
+      const hasWalletErrorName = name.includes("WalletSignTransactionError") || name.includes("WalletSendTransactionError");
+      
+      if (hasWalletErrorName && "message" in err) {
+        const message = String(err.message).toLowerCase();
+        return (
+          message.includes("rejected") ||
+          message.includes("denied") ||
+          message.includes("declined") ||
+          message.includes("cancelled") ||
+          message.includes("canceled")
+        );
+      }
+    }
+    
+    // Check error message for rejection indicators
+    if ("message" in err) {
+      const message = String(err.message).toLowerCase();
+      return (
+        message.includes("user rejected") ||
+        message.includes("rejected the request") ||
+        message.includes("denied") ||
+        message.includes("declined") ||
+        message.includes("cancelled") ||
+        message.includes("cancelled")
+      );
+    }
+  }
+  
+  // Check if it's an Error instance
+  if (err instanceof Error) {
+    const message = err.message.toLowerCase();
+    return (
+      message.includes("user rejected") ||
+      message.includes("rejected the request") ||
+      message.includes("denied") ||
+      message.includes("declined") ||
+      message.includes("cancelled") ||
+      message.includes("cancelled")
+    );
+  }
+  
+  return false;
+}
+
 export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStakeUpdated }: StakeModalProps) {
   const [step, setStep] = useState<Step>("input");
   const [amount, setAmount] = useState<string>("");
@@ -21,6 +80,9 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
   const [error, setError] = useState<string>("");
   const [newBalance, setNewBalance] = useState<number>(0);
   const [copied, setCopied] = useState(false);
+  
+  // Abort controller ref for polling cancellation
+  const confirmAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -34,7 +96,21 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
       setStep("input");
       setError("");
       setTxSignature("");
+    } else {
+      // Abort any in-flight polling when modal closes
+      if (confirmAbortRef.current) {
+        confirmAbortRef.current.abort();
+        confirmAbortRef.current = null;
+      }
     }
+    
+    // Cleanup on unmount
+    return () => {
+      if (confirmAbortRef.current) {
+        confirmAbortRef.current.abort();
+        confirmAbortRef.current = null;
+      }
+    };
   }, [isOpen, requiredFee, currentStake]);
 
   const shortAddress = (addr: string) => {
@@ -47,6 +123,62 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  /**
+   * Poll signature status with abort support
+   */
+  async function pollSignatureStatus(
+    signature: string,
+    connection: any,
+    options: {
+      timeoutMs: number;
+      intervalMs: number;
+      signal: AbortSignal;
+    }
+  ): Promise<boolean> {
+    const { timeoutMs, intervalMs, signal } = options;
+    const startTime = Date.now();
+    const maxAttempts = Math.floor(timeoutMs / intervalMs);
+
+    for (let i = 0; i < maxAttempts; i++) {
+      // Exit immediately if aborted
+      if (signal.aborted) {
+        return false;
+      }
+
+      // Check timeout
+      if (Date.now() - startTime >= timeoutMs) {
+        return false;
+      }
+
+      try {
+        const status = await connection.getSignatureStatus(signature);
+        if (
+          status?.value?.confirmationStatus === "confirmed" ||
+          status?.value?.confirmationStatus === "finalized"
+        ) {
+          return true;
+        }
+      } catch (e) {
+        // Continue polling on error
+      }
+
+      // Wait for next poll, but check abort signal during wait
+      await new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(resolve, intervalMs);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timeoutId);
+          resolve();
+        });
+      });
+
+      if (signal.aborted) {
+        return false;
+      }
+    }
+
+    return false;
+  }
 
   const handleDeposit = async () => {
     const depositAmount = parseFloat(amount);
@@ -200,19 +332,56 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
       transaction.recentBlockhash = blockhash;
       transaction.feePayer = fromPubkey;
 
-      // Sign transaction
-      const signedTx = await wallet.signTransaction(transaction);
-      
-      // Send transaction using Phantom's RPC (not our proxy - proxy only allows reads)
+      // Abort any previous polling
+      if (confirmAbortRef.current) {
+        confirmAbortRef.current.abort();
+      }
+      confirmAbortRef.current = new AbortController();
+
+      // Send transaction using Phantom's RPC (signAndSendTransaction handles both signing and sending)
       // Phantom wallet uses its own RPC endpoint for sending transactions
-      const sendResult = await wallet.signAndSendTransaction(transaction);
+      let sendResult;
+      try {
+        sendResult = await wallet.signAndSendTransaction(transaction);
+      } catch (sendError: unknown) {
+        // Handle user rejection silently - reset UI and return early
+        if (isUserRejectedError(sendError)) {
+          setStep("input");
+          setError("");
+          setTxSignature("");
+          if (confirmAbortRef.current) {
+            confirmAbortRef.current.abort();
+            confirmAbortRef.current = null;
+          }
+          return; // Exit early, no error shown
+        }
+        // Re-throw other errors to be handled by outer catch
+        throw sendError;
+      }
+      
       const signature = sendResult.signature; // Extract signature string from result object
       
-      // Confirm transaction using our proxy (confirmTransaction is a read operation - just polls)
-      await connectionToUse.confirmTransaction(signature, "confirmed");
-      
+      // Only set signature and step after we have a valid signature
       setTxSignature(signature);
       setStep("confirming");
+      
+      // Poll for confirmation using abortable polling
+      const confirmed = await pollSignatureStatus(signature, connectionToUse, {
+        timeoutMs: 15000, // 15 seconds max
+        intervalMs: 500, // Poll every 500ms
+        signal: confirmAbortRef.current.signal,
+      });
+      
+      // Check if polling was aborted (user closed modal or started new deposit)
+      if (confirmAbortRef.current.signal.aborted) {
+        return; // Exit silently if aborted
+      }
+      
+      if (!confirmed) {
+        // Transaction might still be processing, but we'll proceed anyway
+        // The backend verification will catch if it actually failed
+        console.warn("Transaction confirmation timeout, but proceeding with backend verification");
+      }
 
       const confirmResult = await api.stake.confirmDeposit(signature, depositAmount);
       
@@ -224,18 +393,31 @@ export function StakeModal({ isOpen, onClose, currentStake, requiredFee, onStake
         throw new Error("Failed to confirm deposit");
       }
     } catch (err: unknown) {
+      // Abort any polling on error
+      if (confirmAbortRef.current) {
+        confirmAbortRef.current.abort();
+        confirmAbortRef.current = null;
+      }
+      
+      // Handle user rejection silently - should already be caught, but double-check
+      if (isUserRejectedError(err)) {
+        setStep("input");
+        setError("");
+        setTxSignature("");
+        return; // Exit early, no error shown
+      }
+      
+      // For non-rejection errors, show error message
       console.error("Deposit error:", err);
       let errorMessage = "Transaction failed";
       if (err instanceof Error) {
         errorMessage = err.message;
         // Provide more helpful error messages
-        if (err.message.includes("User rejected")) {
-          errorMessage = "Transaction was cancelled. Please try again.";
-        } else if (err.message.includes("insufficient funds") || err.message.includes("Insufficient")) {
+        if (errorMessage.includes("insufficient funds") || errorMessage.includes("Insufficient")) {
           errorMessage = "Insufficient balance. Please check your HIVE token balance.";
-        } else if (err.message.includes("403") || err.message.includes("Access forbidden")) {
+        } else if (errorMessage.includes("403") || errorMessage.includes("Access forbidden")) {
           errorMessage = "RPC access denied. Please try again or contact support.";
-        } else if (err.message.includes("network") || err.message.includes("Network")) {
+        } else if (errorMessage.includes("network") || errorMessage.includes("Network")) {
           errorMessage = "Network error. Please check your connection and try again.";
         }
       }

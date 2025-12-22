@@ -223,6 +223,19 @@ export const api = {
         track?: string;
         sources: Array<{ chunkText: string; score: number; title: string | null }>;
         isGrounded: boolean;
+        usedCorpus: boolean;
+        grounded: boolean;
+        level: number;
+        policySnapshot: {
+          retrievalEnabled: boolean;
+          preferCorpus: "off" | "weak" | "strong";
+          topK: number;
+          minScore: number;
+          requireCitations: boolean;
+          maxAnswerTokens: number;
+          temperature: number;
+          simplicityMode: boolean;
+        };
       }>("/api/ai/chat", {
         method: "POST",
         body: JSON.stringify({ message, aiLevel, track }),

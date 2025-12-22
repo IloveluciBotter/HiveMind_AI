@@ -1070,6 +1070,10 @@ export async function registerRoutes(
       
       let sources: Array<{ chunkText: string; score: number; title: string | null }> = [];
       let isGrounded = false;
+      let usedCorpus = false;
+      let grounded = false;
+      let level = aiLevel;
+      let policySnapshot: any = null;
       
       try {
         const result = await generateChatResponse(
@@ -1081,6 +1085,10 @@ export async function registerRoutes(
         corpusItemsUsed = result.corpusItemsUsed;
         sources = result.sources;
         isGrounded = result.isGrounded;
+        usedCorpus = result.usedCorpus;
+        grounded = result.grounded;
+        level = result.level;
+        policySnapshot = result.policySnapshot;
       } catch (error: any) {
         logger.error({ requestId: req.requestId, error: "[AI Chat] Ollama error", details: error.message });
         captureError(error, { requestId: req.requestId, walletAddress: publicKey });
@@ -1095,6 +1103,8 @@ export async function registerRoutes(
         
         response = `[Development Mode] AI service is currently offline. Your message was: "${body.message.slice(0, 100)}${body.message.length > 100 ? '...' : ''}"`;
         corpusItemsUsed = [];
+        usedCorpus = false;
+        grounded = false;
         logger.warn({ requestId: req.requestId, message: "Using fallback AI response in development mode" });
       }
       
@@ -1134,7 +1144,11 @@ export async function registerRoutes(
         aiLevel,
         track: body.track,
         sources,
-        isGrounded,
+        isGrounded, // Keep for backwards compatibility
+        usedCorpus,
+        grounded,
+        level,
+        policySnapshot,
         metadata: {
           activeModelVersionId: activeVersion?.id || null,
           corpusHash,
