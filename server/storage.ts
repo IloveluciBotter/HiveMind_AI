@@ -24,6 +24,8 @@ import {
   type QuestionAggregate,
   type TrackAggregate,
   type CycleAggregate,
+  type UserQuestionHistory,
+  type InsertUserQuestionHistory,
   users,
   tracks,
   questions,
@@ -50,6 +52,7 @@ import {
   trackAggregates,
   cycleAggregates,
   rankupTrials,
+  userQuestionHistory,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, gte, lte, isNull, gt } from "drizzle-orm";
@@ -194,6 +197,19 @@ export interface IStorage {
   getCorpusStats(): Promise<{ total: number; byTrack: Record<string, number> }>;
   getHubSubmissionById(id: string): Promise<HubSubmission | undefined>;
   
+  // Question history operations
+  recordQuestionHistory(data: {
+    walletAddress: string;
+    questionId: string;
+    trackId?: string;
+    attemptId?: string;
+  }): Promise<UserQuestionHistory>;
+  getUserQuestionHistory(walletAddress: string, options?: {
+    recentDays?: number;
+    limit?: number;
+  }): Promise<UserQuestionHistory[]>;
+  hasSeenQuestion(walletAddress: string, questionId: string): Promise<boolean>;
+
   // Chat operations
   searchCorpusItems(query: string, trackId?: string, limit?: number): Promise<TrainingCorpusItem[]>;
   saveChatMessage(data: {
@@ -785,8 +801,8 @@ export class DbStorage implements IStorage {
       cycleId: data.cycleId,
       normalizedText: data.normalizedText,
       sourceAttemptId: data.sourceAttemptId,
-      createdByWallet: data.submitterWalletPubkey || null, // Legacy field - keep for compatibility
-      submitterWalletPubkey: data.submitterWalletPubkey || null,
+      createdByWallet: null, // Legacy field - keep for compatibility
+      submitterWalletPubkey: null,
     }).returning();
     return result[0];
   }
@@ -1565,6 +1581,97 @@ export class DbStorage implements IStorage {
         });
     }
     return stats.length;
+  }
+
+  // Question history operations
+  async recordQuestionHistory(data: {
+    walletAddress: string;
+    questionId: string;
+    trackId?: string;
+    attemptId?: string;
+  }): Promise<UserQuestionHistory> {
+    // Check if already exists
+    const existing = await db
+      .select()
+      .from(userQuestionHistory)
+      .where(
+        and(
+          eq(userQuestionHistory.walletAddress, data.walletAddress),
+          eq(userQuestionHistory.questionId, data.questionId)
+        )
+      )
+      .limit(1);
+    
+    if (existing.length > 0) {
+      // Update seenAt
+      const updated = await db
+        .update(userQuestionHistory)
+        .set({
+          seenAt: new Date(),
+          attemptId: data.attemptId,
+        })
+        .where(eq(userQuestionHistory.id, existing[0].id))
+        .returning();
+      return updated[0];
+    } else {
+      // Insert new
+      const result = await db
+        .insert(userQuestionHistory)
+        .values({
+          walletAddress: data.walletAddress,
+          questionId: data.questionId,
+          trackId: data.trackId,
+          attemptId: data.attemptId,
+          seenAt: new Date(),
+        })
+        .returning();
+      return result[0];
+    }
+  }
+
+  async getUserQuestionHistory(
+    walletAddress: string,
+    options?: {
+      recentDays?: number;
+      limit?: number;
+    }
+  ): Promise<UserQuestionHistory[]> {
+    const { recentDays, limit } = options || {};
+    
+    const conditions = [eq(userQuestionHistory.walletAddress, walletAddress)];
+    
+    if (recentDays && recentDays > 0) {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - recentDays);
+      conditions.push(gte(userQuestionHistory.seenAt, cutoffDate));
+    }
+    
+    const baseQuery = db
+      .select()
+      .from(userQuestionHistory)
+      .where(and(...conditions))
+      .orderBy(desc(userQuestionHistory.seenAt));
+    
+    if (limit) {
+      return await baseQuery.limit(limit);
+    }
+    
+    return await baseQuery;
+  }
+
+  async hasSeenQuestion(walletAddress: string, questionId: string): Promise<boolean> {
+    const result = await db
+      .select()
+      .from(userQuestionHistory)
+      .where(
+        and(
+          eq(userQuestionHistory.walletAddress, walletAddress),
+          eq(userQuestionHistory.questionId, questionId)
+        )
+      )
+      .limit(1);
+    
+    return result.length > 0;
   }
 }
 

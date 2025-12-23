@@ -13,8 +13,9 @@ import { logger } from "../middleware/logger";
 interface JsonlQuestion {
   id?: string;
   track: string;
-  level: number;
-  difficulty: number;
+  level?: number;
+  difficulty?: number; // Legacy field name (maps to complexity)
+  complexity?: number; // Preferred field name (1-5)
   // Accept multiple field names for question text
   question?: string;
   text?: string;
@@ -23,6 +24,7 @@ interface JsonlQuestion {
   options?: string[];
   choices?: string[];
   correctIndex: number;
+  questionType?: "mcq" | "numeric" | "true_false"; // Optional, defaults to "mcq"
   explanation?: string;
   tags?: string[];
 }
@@ -106,12 +108,15 @@ function validateQuestion(data: any): { valid: boolean; error?: string; question
     return { valid: false, error: "Missing or invalid 'track' field" };
   }
   
-  if (typeof data.level !== "number" || data.level < 1 || data.level > 100) {
+  // Level is optional (used for level-based generation, not stored in DB)
+  if (data.level !== undefined && (typeof data.level !== "number" || data.level < 1 || data.level > 100)) {
     return { valid: false, error: "Invalid 'level' (must be 1-100)" };
   }
   
-  if (typeof data.difficulty !== "number" || data.difficulty < 1 || data.difficulty > 5) {
-    return { valid: false, error: "Invalid 'difficulty' (must be 1-5)" };
+  // Accept either 'difficulty' (legacy) or 'complexity' (preferred)
+  const complexityValue = data.complexity ?? data.difficulty;
+  if (typeof complexityValue !== "number" || complexityValue < 1 || complexityValue > 5) {
+    return { valid: false, error: "Invalid 'complexity' or 'difficulty' (must be 1-5)" };
   }
   
   const questionText = extractQuestionText(data);
@@ -276,13 +281,16 @@ async function importQuestions(filePath: string, failFast: boolean = false): Pro
       
       // Convert to DB format
       // options is JSONB in DB, so pass array directly (not JSON.stringify)
+      const complexityValue = data.complexity ?? data.difficulty ?? 1;
+      const questionTypeValue = (data.questionType === "numeric" ? "numeric" : "mcq") as "mcq" | "numeric";
+      
       const dbQuestion = {
         trackId: String(trackId ?? ""),
         text: String(questionText ?? ""),
         options: Array.isArray(options) ? options : [],
         correctIndex: typeof data.correctIndex === "number" ? data.correctIndex : 0,
-        complexity: typeof data.difficulty === "number" ? data.difficulty : 1,
-        questionType: "mcq" as const,
+        complexity: typeof complexityValue === "number" ? complexityValue : 1,
+        questionType: questionTypeValue,
         isBenchmark: false,
         numericAnswer: null,
         numericTolerance: null,
@@ -354,15 +362,18 @@ async function main() {
   const fileIndex = args.indexOf("--file");
   const failFast = args.includes("--failFast");
   
-  if (fileIndex === -1 || fileIndex === args.length - 1) {
-    console.error("Usage: npx tsx server/scripts/importQuestionsJsonl.ts --file <path-to-jsonl> [--failFast]");
-    process.exit(1);
+  // Support both --file <path> and positional argument
+  let filePath: string | undefined;
+  if (fileIndex !== -1 && fileIndex < args.length - 1) {
+    filePath = args[fileIndex + 1];
+  } else if (args.length > 0 && !args[0].startsWith("--")) {
+    // Positional argument (for npm script compatibility)
+    filePath = args[0];
   }
   
-  const filePath = args[fileIndex + 1];
-  
   if (!filePath) {
-    console.error("Error: --file requires a file path");
+    console.error("Usage: npx tsx server/scripts/importQuestionsJsonl.ts [--file] <path-to-jsonl> [--failFast]");
+    console.error("   or: npm run import:questions -- <path-to-jsonl>");
     process.exit(1);
   }
   

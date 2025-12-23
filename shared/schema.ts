@@ -447,6 +447,23 @@ export const jobs = pgTable("jobs", {
 export type Job = typeof jobs.$inferSelect;
 export type InsertJob = typeof jobs.$inferInsert;
 
+// User Question History - tracks which questions users have seen
+export const userQuestionHistory = pgTable("user_question_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  walletAddress: varchar("wallet_address").notNull(),
+  questionId: varchar("question_id").notNull().references(() => questions.id),
+  trackId: varchar("track_id").references(() => tracks.id),
+  seenAt: timestamp("seen_at").notNull().defaultNow(),
+  attemptId: varchar("attempt_id").references(() => trainAttempts.id), // Optional: link to training attempt
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  // Unique constraint: one record per wallet+question (allows updating seenAt)
+  walletQuestionUnique: uniqueIndex("wallet_question_unique").on(table.walletAddress, table.questionId),
+}));
+
+export type UserQuestionHistory = typeof userQuestionHistory.$inferSelect;
+export type InsertUserQuestionHistory = typeof userQuestionHistory.$inferInsert;
+
 // Model Versioning - track model versions with benchmarks (new schema)
 // Note: There's an existing modelVersions table above, this is a new implementation
 export const modelVersionsV2 = pgTable("model_versions_v2", {

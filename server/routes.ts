@@ -91,6 +91,107 @@ function getCostByDifficulty(difficulty: string): string {
   return costs[difficulty] || "10";
 }
 
+/**
+ * Estimate question complexity (1-5) based on message content
+ * Simple heuristic: check for advanced keywords and concepts
+ */
+function estimateQuestionComplexity(message: string): number {
+  const lowerMessage = message.toLowerCase();
+  
+  // Complexity 5 indicators (advanced/elite topics)
+  const complexity5Keywords = [
+    "quantum", "relativity", "calculus", "derivative", "integral", "theorem", "proof",
+    "algorithm", "complexity", "optimization", "distributed", "concurrency", "race condition",
+    "heisenberg", "entropy", "thermodynamics", "wave function", "eigenvalue",
+  ];
+  
+  // Complexity 4 indicators (advanced topics)
+  const complexity4Keywords = [
+    "algebra", "quadratic", "polynomial", "logarithm", "exponential", "trigonometry",
+    "chemistry", "molecular", "atomic", "bond", "reaction", "oxidation",
+    "physics", "electromagnetic", "frequency", "wavelength", "energy",
+    "database", "index", "query", "transaction", "acid",
+  ];
+  
+  // Complexity 3 indicators (intermediate topics)
+  const complexity3Keywords = [
+    "equation", "solve", "variable", "function", "graph", "slope",
+    "biology", "cell", "organism", "evolution", "genetics",
+    "programming", "code", "function", "variable", "loop", "array",
+  ];
+  
+  // Complexity 2 indicators (basic intermediate)
+  const complexity2Keywords = [
+    "calculate", "percent", "fraction", "decimal", "multiply", "divide",
+    "science", "experiment", "hypothesis", "theory",
+  ];
+  
+  // Check for complexity 5
+  if (complexity5Keywords.some(keyword => lowerMessage.includes(keyword))) {
+    return 5;
+  }
+  
+  // Check for complexity 4
+  if (complexity4Keywords.some(keyword => lowerMessage.includes(keyword))) {
+    return 4;
+  }
+  
+  // Check for complexity 3
+  if (complexity3Keywords.some(keyword => lowerMessage.includes(keyword))) {
+    return 3;
+  }
+  
+  // Check for complexity 2
+  if (complexity2Keywords.some(keyword => lowerMessage.includes(keyword))) {
+    return 2;
+  }
+  
+  // Default to complexity 1 (basic)
+  return 1;
+}
+
+/**
+ * Generate learning steps to reach the required complexity level
+ */
+function generateLearningSteps(
+  currentLevel: number,
+  requiredComplexity: number,
+  currentMaxComplexity: number
+): string[] {
+  const steps: string[] = [];
+  
+  // Calculate target level (complexity * 20, roughly)
+  const targetLevel = requiredComplexity * 20;
+  const levelsNeeded = Math.max(1, targetLevel - currentLevel);
+  
+  steps.push(`Complete ${Math.ceil(levelsNeeded / 5)} training sessions to increase your intelligence level`);
+  steps.push(`Focus on ${getComplexityTrackName(requiredComplexity)} track questions`);
+  steps.push(`Achieve high scores (≥80%) on difficulty ${getDifficultyForComplexity(requiredComplexity)} training attempts`);
+  
+  if (requiredComplexity >= 4) {
+    steps.push(`Consider starting a rank-up trial to unlock level ${targetLevel}`);
+  }
+  
+  if (requiredComplexity === 5) {
+    steps.push(`Master advanced concepts through consistent practice and high-quality submissions`);
+  }
+  
+  return steps;
+}
+
+function getComplexityTrackName(complexity: number): string {
+  if (complexity >= 4) return "Mathematics or Science";
+  if (complexity >= 3) return "Mathematics, Science, or Programming";
+  return "any track";
+}
+
+function getDifficultyForComplexity(complexity: number): string {
+  if (complexity >= 5) return "extreme";
+  if (complexity >= 4) return "high";
+  if (complexity >= 3) return "medium";
+  return "low";
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -444,13 +545,62 @@ export async function registerRoutes(
 
   app.get("/api/tracks/:trackId/questions", defaultLimiter, publicReadLimiter, async (req: Request, res: Response) => {
     try {
-      const questions = await storage.getQuestionsByTrack(req.params.trackId);
-      // Exclude numericAnswer from response (security: don't send correct answers to client)
-      const sanitized = questions.map(q => {
-        const { numericAnswer, ...rest } = q;
-        return rest;
-      });
-      res.json(sanitized);
+      // Check if user is authenticated (optional for this endpoint)
+      const publicKey = (req as any).publicKey;
+      
+      if (publicKey) {
+        // Authenticated: use question selector with level enforcement
+        const balance = await storage.getOrCreateWalletBalance(publicKey);
+        const intelligenceLevel = balance.level;
+        
+        const { selectQuestions } = await import("./services/questionSelector");
+        const count = parseInt(req.query.count as string) || 50; // Default 50 questions
+        
+        const result = await selectQuestions({
+          walletAddress: publicKey,
+          trackId: req.params.trackId,
+          intelligenceLevel,
+          count,
+          avoidRecentDays: 30,
+          allowSeen: false,
+        });
+        
+        // Record question history immediately (user has "seen" these questions)
+        for (const question of result.questions) {
+          try {
+            await storage.recordQuestionHistory({
+              walletAddress: publicKey,
+              questionId: question.id,
+              trackId: req.params.trackId,
+              attemptId: null, // No attempt yet - just viewing
+            });
+          } catch (error: any) {
+            // Non-blocking: log but don't fail the request
+            logger.warn({
+              requestId: req.requestId,
+              error: "Failed to record question history (non-blocking)",
+              questionId: question.id,
+              details: error.message,
+            });
+          }
+        }
+        
+        // Exclude numericAnswer from response (security)
+        const sanitized = result.questions.map(q => {
+          const { numericAnswer, ...rest } = q;
+          return rest;
+        });
+        
+        res.json(sanitized);
+      } else {
+        // Unauthenticated: return all questions (backward compatibility)
+        const questions = await storage.getQuestionsByTrack(req.params.trackId);
+        const sanitized = questions.map(q => {
+          const { numericAnswer, ...rest } = q;
+          return rest;
+        });
+        res.json(sanitized);
+      }
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch questions" });
     }
@@ -1050,9 +1200,9 @@ export async function registerRoutes(
       const body = chatMessageSchema.parse(req.body);
       const publicKey = (req as any).publicKey;
       
-      // Validate aiLevel server-side: clamp to reasonable range (1-100)
-      // In a production system, this would be fetched from stored user progress
-      const aiLevel = Math.max(1, Math.min(100, body.aiLevel));
+      // Fetch user's actual intelligence level from database (enforce server-side)
+      const balance = await storage.getOrCreateWalletBalance(publicKey);
+      const intelligenceLevel = balance.level; // Server-side level (1-100)
       
       // Look up trackId if track name provided
       let trackId: string | undefined;
@@ -1062,7 +1212,13 @@ export async function registerRoutes(
         trackId = matchedTrack?.id;
       }
       
-      // Generate response using Ollama
+      // Check if question is above user's level (simple heuristic)
+      const { allowedComplexity } = await import("./services/questionSelector");
+      const userMaxComplexity = allowedComplexity(intelligenceLevel);
+      const questionComplexity = estimateQuestionComplexity(body.message);
+      const isQuestionAboveLevel = questionComplexity > userMaxComplexity;
+      
+      // Generate response using Ollama (always use server-side intelligence level)
       const { generateChatResponse } = await import("./aiChat");
       
       let response: string;
@@ -1072,16 +1228,31 @@ export async function registerRoutes(
       let isGrounded = false;
       let usedCorpus = false;
       let grounded = false;
-      let level = aiLevel;
+      let level = intelligenceLevel;
       let policySnapshot: any = null;
+      let isGated = false;
+      let learningSteps: string[] = [];
       
       try {
         const result = await generateChatResponse(
           body.message,
-          aiLevel,
+          intelligenceLevel, // Use server-side level, not client-provided
           trackId
         );
-        response = result.response;
+        
+        // If question is above level, gate the response
+        if (isQuestionAboveLevel) {
+          isGated = true;
+          learningSteps = generateLearningSteps(intelligenceLevel, questionComplexity, userMaxComplexity);
+          
+          // Modify response to include gating message
+          response = `I understand you're asking about an advanced topic. At your current intelligence level (${intelligenceLevel}), this topic requires complexity level ${questionComplexity}, but you currently have access up to level ${userMaxComplexity}.\n\n` +
+            `Here's a simplified answer based on your current level:\n\n${result.response}\n\n` +
+            `**To unlock this topic, here's what you need to do:**\n${learningSteps.map((step, i) => `${i + 1}. ${step}`).join('\n')}`;
+        } else {
+          response = result.response;
+        }
+        
         corpusItemsUsed = result.corpusItemsUsed;
         sources = result.sources;
         isGrounded = result.isGrounded;
@@ -1122,11 +1293,11 @@ export async function registerRoutes(
         }
       }
       
-      // Save to chat history
+      // Save to chat history (use server-side intelligence level)
       const chatMessage = await storage.saveChatMessage({
         walletAddress: publicKey,
         trackId,
-        aiLevel: body.aiLevel,
+        aiLevel: intelligenceLevel, // Use server-side level
         userMessage: body.message,
         aiResponse: response,
         corpusItemsUsed,
@@ -1141,14 +1312,16 @@ export async function registerRoutes(
         id: chatMessage.id,
         response,
         corpusItemsUsed: corpusItemsUsed.length,
-        aiLevel,
+        aiLevel: intelligenceLevel, // Server-side level
         track: body.track,
         sources,
         isGrounded, // Keep for backwards compatibility
         usedCorpus,
         grounded,
-        level,
+        level: intelligenceLevel, // Server-side level
         policySnapshot,
+        isGated, // Whether response was gated due to level
+        learningSteps: isGated ? learningSteps : undefined,
         metadata: {
           activeModelVersionId: activeVersion?.id || null,
           corpusHash,
@@ -1493,6 +1666,26 @@ export async function registerRoutes(
         attemptDurationSec,
         submitterWalletPubkey, // Store session wallet (server source of truth)
       });
+
+      // Record question history (user has seen these questions)
+      try {
+        for (const questionId of body.questionIds) {
+          await storage.recordQuestionHistory({
+            walletAddress: publicKey,
+            questionId,
+            trackId: body.trackId,
+            attemptId: attempt.id,
+          });
+        }
+      } catch (error: any) {
+        // Non-blocking: log but don't fail the submission
+        logger.error({
+          requestId: req.requestId,
+          error: "Failed to record question history (non-blocking)",
+          attemptId: attempt.id,
+          details: error.message,
+        });
+      }
       
       await audit.log("submission_created", {
         targetType: "submission",
@@ -2772,70 +2965,61 @@ export async function registerRoutes(
         });
       }
 
-      // Get all tracks to pull questions from
-      const tracks = await storage.getAllTracks();
-      if (tracks.length === 0) {
-        return res.status(500).json({ error: "No tracks available" });
-      }
+      // Get user's intelligence level
+      const balance = await storage.getOrCreateWalletBalance(publicKey);
+      const intelligenceLevel = balance.level;
 
+      // Use question selector for rank-up questions
+      const { selectRankupQuestions } = await import("./services/questionSelector");
       const minDifficulty = Math.ceil(parseFloat(trial.minAvgDifficulty));
+      const needed = trial.questionCount; // Preferred count (typically 20)
       const minRequired = 5; // Minimum required questions
-      const needed = trial.questionCount; // Preferred count
-      let allQuestions: any[] = [];
-      let fallbackUsed = false;
-      let currentDifficulty = minDifficulty;
 
-      // Try to collect questions starting with minDifficulty, then fallback to lower difficulties
-      while (currentDifficulty >= 1 && allQuestions.length < needed) {
-        const questionsAtDifficulty: any[] = [];
-        
-        for (const track of tracks) {
-          const trackQuestions = await storage.getQuestionsByTrack(track.id);
-          const filtered = trackQuestions.filter(q => q.complexity >= currentDifficulty);
-          questionsAtDifficulty.push(...filtered);
-        }
-        
-        // Remove duplicates (questions already in allQuestions)
-        const existingIds = new Set(allQuestions.map(q => q.id));
-        const uniqueQuestions = questionsAtDifficulty.filter(q => !existingIds.has(q.id));
-        allQuestions.push(...uniqueQuestions);
-        
-        // If we have enough, stop
-        if (allQuestions.length >= needed) {
-          break;
-        }
-        
-        // If we tried a lower difficulty, mark fallback as used
-        if (currentDifficulty < minDifficulty) {
-          fallbackUsed = true;
-        }
-        
-        // Try next lower difficulty (down to 1)
-        if (allQuestions.length < needed && currentDifficulty > 1) {
-          currentDifficulty--;
-        } else {
-          break;
-        }
-      }
+      const result = await selectRankupQuestions({
+        walletAddress: publicKey,
+        trackId: undefined, // All tracks for rank-up
+        intelligenceLevel,
+        count: needed,
+        avoidRecentDays: 30,
+        allowSeen: false, // Prefer unseen questions
+        minComplexity: minDifficulty,
+      });
 
-      // Check if we have the minimum required (5 questions)
-      if (allQuestions.length < minRequired) {
+      // Check if we have the minimum required
+      if (result.questions.length < minRequired) {
         return res.status(400).json({
           error: "Insufficient questions",
           minDifficulty,
-          found: allQuestions.length,
+          found: result.questions.length,
           needed: minRequired,
-          fallbackUsed,
+          totalAvailable: result.totalAvailable,
+          filteredByComplexity: result.filteredByComplexity,
+          filteredByHistory: result.filteredByHistory,
         });
       }
 
-      // Shuffle randomly
-      const shuffled = allQuestions.sort(() => Math.random() - 0.5);
-      // Return up to trial.questionCount (20) if available, otherwise return what we have
-      const selected = shuffled.slice(0, Math.min(allQuestions.length, needed));
+      // Record question history immediately (user has "seen" these questions)
+      for (const question of result.questions) {
+        try {
+          await storage.recordQuestionHistory({
+            walletAddress: publicKey,
+            questionId: question.id,
+            trackId: undefined, // Rank-up uses all tracks
+            attemptId: null, // No attempt yet - just viewing
+          });
+        } catch (error: any) {
+          // Non-blocking: log but don't fail the request
+          logger.warn({
+            requestId: req.requestId,
+            error: "Failed to record question history (non-blocking)",
+            questionId: question.id,
+            details: error.message,
+          });
+        }
+      }
 
       // Exclude numericAnswer (security)
-      const sanitized = selected.map(q => {
+      const sanitized = result.questions.map(q => {
         const { numericAnswer, ...rest } = q;
         return rest;
       });

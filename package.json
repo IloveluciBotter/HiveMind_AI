@@ -18,7 +18,12 @@
     "docker:logs": "docker compose logs -f",
     "docker:shell": "docker compose exec app sh",
     "docker:db:push": "docker compose exec app npm run db:push",
-    "docker:seed": "docker compose exec app npm run seed"
+    "docker:seed": "docker compose exec app npm run seed",
+    "gen:questions": "tsx server/scripts/generateQuestionsJsonl.ts",
+    "import:questions": "tsx server/scripts/importQuestionsJsonl.ts",
+    "gen-and-import": "tsx server/scripts/generateQuestionsJsonl.ts --out questions_auto.jsonl && tsx server/scripts/importQuestionsJsonl.ts --file questions_auto.jsonl",
+    "topup:questions": "tsx server/scripts/topUpQuestions.ts",
+    "test:leveling": "tsx -r dotenv/config test-leveling-manual.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
