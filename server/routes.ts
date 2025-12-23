@@ -41,6 +41,7 @@ import { getAutoReviewConfig, computeAutoReview, calculateStyleCredits, calculat
 import { getDb, isDbConfigured } from "./db";
 import { sql } from "drizzle-orm";
 import { registerSolanaProxyRoutes } from "./routes/solanaProxy";
+import { env } from "./env";
 
 // Helper to get user ID from session (simplified - you may want to add proper auth)
 function getUserId(req: Request): string | null {
@@ -196,6 +197,7 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  const isProd = process.env.NODE_ENV === "production";
   // Seed default tracks on startup (idempotent - won't duplicate)
   try {
     await seedDefaultTracks();
@@ -458,7 +460,7 @@ export async function registerRoutes(
       // Set secure httpOnly cookie with raw session token
       res.cookie("sid", sessionToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: isProd,
         sameSite: "lax",
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         path: "/",

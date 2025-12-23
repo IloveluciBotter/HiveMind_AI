@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import helmet from "helmet";
 import { createServer, type Server } from "http";
 import { requestIdMiddleware } from "./middleware/requestId";
 import { httpLogger, logger } from "./middleware/logger";
@@ -19,8 +20,20 @@ export async function createApp(): Promise<{ app: express.Application; httpServe
   const app = express();
   const httpServer = createServer(app);
 
-  // Trust proxy for accurate IP detection behind load balancers (Replit, Render, etc.)
-  app.set("trust proxy", true);
+  const isProd = process.env.NODE_ENV === "production";
+
+  // Production-only security hardening
+  if (isProd) {
+    app.set("trust proxy", 1); // Behind Caddy reverse proxy
+  }
+
+  app.disable("x-powered-by");
+  app.use(helmet({ contentSecurityPolicy: false })); // No CSP yet
+
+  logger.info({
+    source: "express",
+    message: `Security: isProd=${isProd}, cookieSecure=${isProd}`,
+  });
 
   // CORS configuration
   const allowedOrigins = env.ALLOWED_ORIGINS
