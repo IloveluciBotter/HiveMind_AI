@@ -13,3 +13,7 @@ vite.config.ts.*
 # Replit state (should never be required for builds)
 .local/.env
 .env.*
+
+# Local-only artifacts
+_local/
+
