@@ -1,0 +1,323 @@
+You are building a complete, fully running website for my project “Train Your AI”.
+
+This website is not the app itself.
+It is a companion landing site that explains and showcases the project, and includes a small interactive demo that mimics the core idea.
+The full app (the full AI training experience) exists separately but is directly related to everything on this site.
+
+The site must:
+
+Run end-to-end in this repl.
+
+Have no placeholder text or TODOs.
+
+Be fully responsive and pleasant to use on desktop and mobile.
+
+Core concept to communicate
+
+Train Your AI is:
+
+An educational experience where users “train” a virtual AI brain by answering quizzes and learning themselves.
+
+Less of an arcade game and more of an interactive learning lab:
+
+Each session is a short quiz.
+
+High scores mean the AI “accepts” the data and gets smarter.
+
+Low scores mean the AI may roll back some intelligence to avoid bad training data.
+
+There is also a crypto token called $BRAIN, used for gated access and future utility, but the focus is education, learning progress, and AI literacy—not financial speculation.
+
+The website should:
+
+Clearly explain the idea in simple language.
+
+Let visitors try a small demo quiz on the webpage to feel how “training the AI” works.
+
+Clearly state that:
+
+“This is the official landing page for Train Your AI.”
+
+“The full app lives separately but uses the same core training concepts.”
+
+Overall vibe and style
+
+Dark, futuristic learning lab theme.
+
+Background: dark with subtle blue/purple gradient or glow.
+
+Accent colors: neon cyan, soft purple, and a little green to represent learning/progress.
+
+Tone: friendly, curious, educational. Not casino-like, not overly degen.
+
+Use clear, conversational language. Avoid jargon wherever possible.
+
+Page structure (single-page layout)
+
+Build a single-page website with navigational links that scroll to sections:
+
+Sections:
+
+Sticky Header
+
+Hero / Overview
+
+“This Site vs. The Full App” clarification
+
+“How It Works”
+
+Interactive Lab (mini quiz demo)
+
+“Why It’s Educational”
+
+Token & Access (high-level, non-hype)
+
+Cosmetics & Motivation
+
+FAQ
+
+Footer with About & Disclaimer
+
+1. Sticky Header
+
+At the top of the page, always visible while scrolling.
+
+Left side: simple logo area:
+
+A small brain/AI icon (e.g. emoji or simple graphic) and the text Train Your AI.
+
+Right side: navigation links that scroll to sections:
+
+“Overview”, “How It Works”, “Interactive Lab”, “Token”, “FAQ”.
+
+Include a small button labeled Try the Lab that scrolls directly to the Interactive Lab section.
+
+On small screens, the navigation should still be usable (e.g. simplified layout or stacked links).
+
+2. Hero / Overview section
+
+Big title:
+
+“Train an AI brain by training your own.”
+
+Subtext:
+
+“Train Your AI is an educational lab where you answer focused quizzes and see how clean data shapes a virtual AI’s intelligence.”
+
+Two primary actions:
+
+Button: Try the Interactive Lab → scrolls to the Interactive Lab section.
+
+Button: Follow on X → opens https://x.com in a new tab.
+
+Under the buttons, a short row of feature tags, for example:
+
+“Educational quizzes · Adaptive difficulty · AI personality · Token-gated features”
+
+On the side (or below on mobile), show a simple visual:
+
+A stylized “AI brain” or glowing orb with a small label like “Intelligence Level 3 → Level 4” to suggest progress.
+
+3. “This Site vs. The Full App” section
+
+This is important: clearly explain that this website is the landing/companion site, not the full app.
+
+Small heading: “What this site is (and isn’t)”
+
+Short paragraph explaining:
+
+“This website is the official landing page for Train Your AI.”
+
+“Here, you can learn what the project is about and try a small interactive demo.”
+
+“The full Train Your AI app is a separate, more advanced experience that uses the same training system, more question content, wallet integration, and progression features.”
+
+Include a note that the demo on this site “mirrors the core training loop” but is simpler than the full app.
+
+4. “How It Works” section
+
+Explain the core loop in 3–4 clear steps, focused on education:
+
+Step 1: Answer focused quizzes
+
+“You get a short set of questions around logic, general knowledge, and tech literacy.”
+
+Step 2: Train the virtual AI
+
+“High scores are treated as clean training data. The AI’s intelligence score increases.”
+
+Step 3: Protect the AI from bad data
+
+“If you score poorly, the AI may roll back some intelligence to avoid learning from noise.”
+
+Step 4: Climb difficulty levels
+
+“As you and the AI improve, the questions get more challenging.”
+
+Present these as cards or numbered steps with icons.
+
+5. Interactive Lab (mini quiz demo)
+
+Build a small, self-contained interactive demo directly on this page:
+
+A card titled “Interactive Training Lab (Demo)”.
+
+Copy explaining:
+
+“This is a simplified version of the training loop from the full app.”
+
+“Answer a few questions and see how the demo AI’s intelligence score changes.”
+
+Behavior:
+
+Show a small “AI intelligence bar” or level display, such as:
+
+“Demo AI Intelligence: Level 1 · Score: 0”
+
+Below, provide a short quiz:
+
+For example, 3–5 multiple-choice questions with real content (no placeholder questions).
+
+When the user submits:
+
+Calculate correct answers.
+
+Show feedback:
+
+“You scored X/Y.”
+
+If they scored above a threshold:
+
+Increase the demo AI’s “intelligence level” and update bar.
+
+If they scored low:
+
+Decrease or do not increase the intelligence, with text explaining that “bad data can’t always be used”.
+
+This demo does not need to use any crypto or wallet logic; it just illustrates the educational concept.
+
+The demo must be fully functional and resettable (e.g. a “Try again” button).
+
+6. “Why It’s Educational” section
+
+Explain the educational benefits in a friendly way:
+
+Headline: “Why Train Your AI is an educational lab”
+
+3–4 bullet points, for example:
+
+“Makes AI training concepts tangible through quiz-based feedback.”
+
+“Encourages deliberate practice and consistent improvement.”
+
+“Shows how data quality affects model performance.”
+
+“Gives learners a risk-free way to experiment with an ‘AI brain’.”
+
+Include a short highlight box:
+
+“You’re not just training a virtual AI. You’re training your own thinking.”
+
+7. Token & Access section
+
+High-level, educational, and safe. Do NOT make investment promises.
+
+Title: “Where $BRAIN fits in”
+
+Text that explains:
+
+“$BRAIN is a token used in the full Train Your AI app for gated features like advanced training sessions and future experiments.”
+
+“Holding a certain amount of $BRAIN may be required to access Ranked or higher-stakes training modes in the full app.”
+
+“The focus of Train Your AI is educational and experimental—$BRAIN is a tool inside that ecosystem, not a promise of returns.”
+
+Include a small disclaimer box:
+
+“This is not financial advice. Train Your AI and $BRAIN are experimental and for educational/entertainment use only.”
+
+You don’t need to show live token data; just explain the relationship conceptually.
+
+8. Cosmetics & Motivation section
+
+Explain the cosmetic/flair side as motivation, not power:
+
+Title: “Cosmetics, styles, and motivation”
+
+Explain:
+
+“In the full app, you can earn a soft currency by performing well and use it to unlock cosmetic upgrades.”
+
+“These include different AI ‘shells’ (like glitchy or overclocked cores) and neon auras.”
+
+“Cosmetics are purely visual—they don’t increase intelligence or give gameplay power. They’re there to make progress feel satisfying.”
+
+Display a visual grid or simple layout with a few example cosmetic concepts:
+
+“Default Core”, “Glitched Core”, “Overclocked Core”
+
+“Neon Blue Aura”, “Neon Purple Aura”, “Neon Green Aura”
+
+9. FAQ section
+
+Add a short FAQ with clear, honest answers. At least 5 Q&As. Example topics:
+
+“Is this site the app?”
+
+Answer clearly that this is the landing/educational companion site, with a demo, and that the full app lives separately but uses the same AI-training system.
+
+“Do I need crypto to use Train Your AI?”
+
+Clarify that the on-page demo does not require crypto, and that the full app uses tokens for certain modes.
+
+“Is this financial advice?”
+
+“No. This is an educational and experimental project.”
+
+“Do you store my private keys or wallet info?”
+
+“No. The full app uses standard wallet connections; private keys are never shared.”
+
+“What kind of questions does the AI use?”
+
+Briefly describe: logic, general knowledge, tech literacy, etc.
+
+10. Footer: About & Disclaimer
+
+In the footer, include:
+
+A short About line:
+
+“Train Your AI is an educational experiment that turns training an AI model into an interactive quiz experience.”
+
+A disclaimer:
+
+“Nothing on this site or in the Train Your AI ecosystem is financial advice.”
+
+“The on-page demo stores its data only in your browser.”
+
+A small link-style text:
+
+“Follow on X” → again linking to https://x.com in a new tab.
+
+General requirements
+
+All visible text must be real, clear, and user-facing. No placeholder lorem ipsum or “add your text here”.
+
+The page must be fully functional:
+
+Navigation links scroll to sections.
+
+Buttons work as described.
+
+The Interactive Lab mini-quiz runs correctly and updates the demo AI’s displayed intelligence.
+
+The site must clearly and explicitly state that:
+
+It is the landing/companion site.
+
+The full Train Your AI app is a separate experience but directly correlated to what’s described here.
+
+Maintain a consistent dark, neon-accent learning-lab style throughout.
+
+Build everything needed in this repl so that when I press Run, I get this full site immediately.

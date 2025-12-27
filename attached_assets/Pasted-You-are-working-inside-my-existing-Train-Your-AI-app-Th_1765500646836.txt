@@ -1,0 +1,187 @@
+You are working inside my existing “Train Your AI” app.
+
+The app already has:
+
+- A home screen showing an AI avatar, intelligence level, stats, level selector, and Style Credits.
+- A training flow where the user answers 10 questions, gets a scorePercent, and the app updates the local intelligence level and stats.
+- A result screen that knows:
+  - scorePercent
+  - currentLevel
+  - which questions were asked and whether they were correct
+- LocalStorage persistence for the user’s stats.
+- An AI chat panel that reads the current intelligence and talks back.
+- Event logging (session_start, session_end, etc.).
+
+We are changing the design so that there is a **global Hive Mind** that everyone is “training together”, instead of only a private AI per user.
+
+I want you to ADD a Hive Mind system on top of the existing app WITHOUT breaking anything.
+
+Implement the following:
+
+====================================================
+1) Add a globalBrain object to the app state
+====================================================
+
+Create a new object in the main app state called `globalBrain` with this structure:
+
+- level: number (start at 1)
+- xp: number (start at 0)
+- stability: number between 0 and 1 (start at 1)
+- categories: an object with keys:
+  - logic:   { strength: number, samples: number }
+  - math:    { strength: number, samples: number }
+  - general: { strength: number, samples: number }
+- lastRollback: string or null (start as null)
+
+Initialize:
+
+- strength values at 0.5
+- samples at 0
+
+Persist `globalBrain` in localStorage along with the existing game state so that it survives refreshes for this browser.
+
+====================================================
+2) Update the Hive Mind after every training session
+====================================================
+
+At the point in the code where a training session ends and the result screen is shown, you already know:
+
+- scorePercent for the 10-question run
+- currentLevel played
+- which questions were asked (with some notion of category: logic, math, general)
+  - If there is no category property yet, infer a simple category property and store it alongside questions (you can hardcode category tags into the question bank).
+
+Create a function called `updateGlobalBrain(result)` that:
+
+Input object:
+
+- scorePercent: number
+- level: number
+- categoriesUsed: array of category keys seen in this run (e.g. ["logic", "math"])
+
+Logic:
+
+- If scorePercent >= 80:
+  - Treat as **accepted training**:
+    - Increase `globalBrain.xp` by `(scorePercent - 70) * level`.
+    - For each category in categoriesUsed:
+      - Increase `strength` slightly, e.g. `+ 0.01 * (scorePercent / 100)`, and clamp between 0 and 1.
+      - Increment `samples` for that category.
+    - Keep `stability` the same or increase it slightly (max 1.0).
+
+- Else if scorePercent between 50 and 79:
+  - Treat as **observed but not learned**:
+    - Do not change `strength`, only increment `samples` for categories.
+    - Slightly nudge `stability` down if there have been many of these in a row (you can track a simple rolling count), but do not change level or xp.
+
+- Else if scorePercent < 50:
+  - Treat as **harmful / noisy data**:
+    - Decrease `globalBrain.xp` by a small amount, e.g. `(50 - scorePercent) * (level / 2)` and never below 0.
+    - For each category in categoriesUsed:
+      - Decrease `strength` slightly, e.g. `-0.01 * ((50 - scorePercent) / 50)`, clamped to a minimum of 0.
+      - Increment `samples`.
+    - Reduce `stability` by a moderate amount, e.g. `-0.05`, clamped to a minimum of 0.
+    - If stability falls below 0.3 OR xp has dropped significantly compared to its recent maximum, trigger a **rollback event**:
+      - Decrease `globalBrain.level` by 1 (but not below 1).
+      - Set `globalBrain.lastRollback` to a short explanation string like:
+        - “Rollback triggered: too many low-scoring training runs. The hive mind reverted some knowledge to avoid learning from noisy data.”
+
+Also:
+
+- When `globalBrain.xp` crosses a threshold (e.g. every 1000 xp), increase `globalBrain.level` by 1 and log a `hive_level_up` event using the existing logging system.
+
+Call `updateGlobalBrain` at the end of every session with the actual scorePercent, level, and the categories used in that run.
+
+Save `globalBrain` back to localStorage after every update.
+
+====================================================
+3) Show the Hive Mind on the home screen
+====================================================
+
+On the Home screen, add a new section/card titled **“Hive Mind”**.
+
+It should display:
+
+- “Hive Mind Intelligence: Level X” (X = globalBrain.level)
+- A progress bar showing `globalBrain.xp` progress towards the next level.
+  - For example, assume each level requires 1000 xp; show `xp % 1000` / 1000 as the bar.
+- “Stability: YY%” where YY = `globalBrain.stability * 100` rounded.
+  - If stability is high (e.g. > 0.7), color this label green.
+  - If medium (0.4–0.7), yellow.
+  - If low (< 0.4), red.
+
+Below that, show category strengths:
+
+- Logic: 82% (based on `strength` * 100)
+- Math: 74%
+- General: 61%
+
+Visualize them as small horizontal bars or chips.
+
+Also show a small summarizing line if `globalBrain.lastRollback` is not null:
+
+- “Last rollback: <text>”
+
+Style this card so it matches your existing dark/glass UI.
+
+====================================================
+4) Show each user’s impact on the Hive Mind
+====================================================
+
+In the user’s stats, add a new block that indicates their cumulative impact on the hive mind.
+
+Extend the existing user state with:
+
+- `hiveImpactXp`: number (starting at 0) – net xp added or removed from the hive mind due to this user’s accepted/harmful runs.
+- `hiveSessions`: number – how many sessions this user has contributed to the hive mind.
+
+Update these values inside `updateGlobalBrain` or wherever you call it, based on the xp changes you apply to `globalBrain.xp`.
+
+Display on the home screen in the user stats area:
+
+- “Your sessions contributed: N”
+- “Net impact on Hive Mind XP: +M” (show a + or – sign and color green or red accordingly)
+
+Persist these new user stats in localStorage with the rest of the user state.
+
+====================================================
+5) Make the AI chat aware of the Hive Mind
+====================================================
+
+Update the AI chat reply logic so the AI can occasionally reference the hive mind state.
+
+Examples of behaviors:
+
+- If globalBrain.stability is low:
+  - Occasionally include a line like:
+    - “The hive mind feels unstable lately. Too many noisy runs.”
+- If the user’s `hiveImpactXp` is strongly positive:
+  - Occasionally praise the user:
+    - “You’ve been a strong contributor to the hive mind. Your runs have helped increase its intelligence.”
+- If `globalBrain.lastRollback` is recent:
+  - Mention it once:
+    - “We recently rolled back some knowledge because of weak training data. Let’s send cleaner signals this time.”
+
+Add this logic into the existing `generateAiReply` function, using `globalBrain` and the user impact stats as additional inputs.
+
+====================================================
+6) Integration & safety
+====================================================
+
+- Do NOT remove or break existing features:
+  - Unlimited levels per user
+  - Style Credits
+  - Cosmetics
+  - Local intelligence system
+  - Token gating
+  - Onboarding and FAQ
+- The Hive Mind is an additional shared brain concept on top of the existing per-user experience.
+- Ensure everything compiles and runs with no TypeScript/JS errors.
+- Make sure initial load handles missing `globalBrain` in localStorage by creating the default structure.
+
+When you are done, the app should:
+
+- Show a living Hive Mind card on the home screen.
+- Update the globalBrain intelligently after each run.
+- Track and show each user’s net impact.
+- Allow the AI chat to comment on hive stability and the user’s contribution.
